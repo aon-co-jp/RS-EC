@@ -1,9 +1,9 @@
-# 開発方針＆開発環境ルール(REC-CUBE)
+# 開発方針＆開発環境ルール(RS-EC)
 
 作業ドライブは`F:\runo`。この節は[`open-raid-z`](https://github.com/aon-co-jp/open-raid-z)の
 `CLAUDE.md`を正本とし、各プロジェクトへコピーして同期する方針に準じる。
-GitHubリポジトリ: [aon-co-jp/REC-CUBE](https://github.com/aon-co-jp/REC-CUBE)。
-VPS上の作業パス: `/root/REC-CUBE`(空フォルダ作成済み、2026-07-21)。
+GitHubリポジトリ: [aon-co-jp/RS-EC](https://github.com/aon-co-jp/RS-EC)。
+VPS上の作業パス: `/root/RS-EC`(空フォルダ作成済み、2026-07-21)。
 
 ## このプロジェクトの役割
 
@@ -36,7 +36,7 @@ VPS上の作業パス: `/root/REC-CUBE`(空フォルダ作成済み、2026-07-21
 
 ## 方針決定事項(2026-07-21、ユーザー確認済み)
 
-- **着手順番**: `RRedmine`・`RWordPress`・`REC-CUBE`は同時並行ではなく
+- **着手順番**: `RRedmine`・`RWordPress`・`RS-EC`は同時並行ではなく
   **1つずつ順番に、`RGit`と同じ深さまで作り込んでから次へ**進める。
   どれを最初にするかは次回セッション冒頭で決定。
 - **データベース**: `aruaru-db`(ZFS互換・ACID互換のRust製DB)を採用、
@@ -51,7 +51,7 @@ VPS上の作業パス: `/root/REC-CUBE`(空フォルダ作成済み、2026-07-21
   ドメイン追加のたびに個別インストールは不要とする。実装は`aruaru-llm`
   の`src/tenants.rs`(`TenantRegistry`)と同じパターン。**管理は
   `open-easy-web`側から行う**(`appserver_registration.rs`に
-  `REC-CUBE`用の`AppServerKind`variantを追加する形)。
+  `RS-EC`用の`AppServerKind`variantを追加する形)。
   **非同期・マルチCPU/マルチコア/マルチスレッド対応**: `#[tokio::main]`
   は既定の`multi_thread`フレーバー、CPU負荷の高い処理は`rayon`で
   全論理コアへ並列ディスパッチする。
