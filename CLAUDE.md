@@ -45,6 +45,16 @@ VPS上の作業パス: `/root/REC-CUBE`(空フォルダ作成済み、2026-07-21
   「4層4重」DUAL DB思想と同じ方針、設定で切り替え可能にする。決済・
   注文データはACID・監査性が特に重要なため、DUAL DB構成が実際に効いて
   くる領域として優先的に設計する。
+- **「分身の術」構成でDB層を共有する**(ユーザー指示、2026-07-21追記):
+  `open-web-server`・`aruaru-llm`・RPoem/RCosmoと同じ設計思想により、
+  `aruaru-db`/PostgreSQL接続は**1インスタンスを複数ドメインが共有**し、
+  ドメイン追加のたびに個別インストールは不要とする。実装は`aruaru-llm`
+  の`src/tenants.rs`(`TenantRegistry`)と同じパターン。**管理は
+  `open-easy-web`側から行う**(`appserver_registration.rs`に
+  `REC-CUBE`用の`AppServerKind`variantを追加する形)。
+  **非同期・マルチCPU/マルチコア/マルチスレッド対応**: `#[tokio::main]`
+  は既定の`multi_thread`フレーバー、CPU負荷の高い処理は`rayon`で
+  全論理コアへ並列ディスパッチする。
 - **決済機能**: **実決済連携(Stripe等)まで目指す**(モックのみでは
   終わらせない、ユーザー指示)。ただし本システムのセキュリティルール
   (財務系の実処理は必ずユーザー確認を挟む、支払い情報を平文で扱わない)
