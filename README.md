@@ -7,13 +7,16 @@
 
 ## 現状(v0.1.0)
 
-> ⚠️ **正直な開示**: v0.1.0時点では商品カタログ(Product)のCRUD+OTP
-> ログイン(管理者+登録アカウント、自己申請→管理者審査)のみを実装
-> している。EC-CUBEが持つ以下の機能は**まだ一切無い**:
+> ⚠️ **正直な開示**: v0.1.0時点では商品カタログ(Product)のCRUD、
+> カテゴリ管理、お気に入り(wishlist)、OTPログイン(管理者+登録
+> アカウント、自己申請→管理者審査)のみを実装している。EC-CUBEが持つ
+> 以下の機能は**まだ一切無い**:
 >
 > - **カート・注文・決済連携(実決済は一切未実装。Stripe等のゲートウェイ
->   呼び出し・カード情報の取り扱いは一切行っていない)**
-> - 会員管理(ポイント・お気に入り等)
+>   呼び出し・カード情報の取り扱いは一切行っていない)**。お気に入り
+>   機能はあるが、これは「保存した商品IDのリスト」にすぎず、数量・
+>   合計金額・注文作成・決済のいずれも持たないため**カートではない**。
+> - 会員管理(ポイント等。お気に入りのみ実装済み)
 > - 配送・在庫管理(在庫数フィールドはあるが自動引き落とし等は無し)
 > - プラグイン機構・管理画面(APIのみ、UIは無し)
 > - `aruaru-db`/PostgreSQL DUAL DB構成(現状はJSONファイル永続化のみ)
@@ -25,12 +28,17 @@
 - `POST /api/accounts` / `GET /api/accounts` — 登録済みメールアドレスの追加・一覧(管理者のみ)
 - `POST /api/accounts/request` — アクセス許可の自己申請(認証不要)
 - `GET /api/accounts/requests` / `POST /api/accounts/requests/:id/decide` — 申請一覧・審査(管理者のみ)
-- `POST /api/products` / `GET /api/products` — 商品の作成・一覧(カタログへの閲覧/編集権限が必要)
-- `GET /api/products/:id` / `PUT /api/products/:id` / `DELETE /api/products/:id` — 商品の取得・更新・削除
+- `POST /api/products` / `GET /api/products` — 商品の作成・一覧(カタログへの閲覧/編集権限が必要、`?category=<id>`で絞り込み可)
+- `GET /api/products/:id` / `PUT /api/products/:id` / `DELETE /api/products/:id` — 商品の取得・更新・削除(所属カテゴリの変更含む)
+- `GET /api/categories` / `POST /api/categories` — カテゴリ一覧(公開)・新規作成(管理者のみ)
+- `DELETE /api/categories/:id` — カテゴリ削除(管理者のみ)
+- `GET /api/favorites` / `POST /api/favorites` — 自分のお気に入り商品一覧取得・追加(要ログイン、**カートではない**)
+- `DELETE /api/favorites/:product_id` — お気に入りから削除(要ログイン)
 
 商品は`draft`(下書き)/`on_sale`(販売中)/`sold_out`(売り切れ)の3ステータス。
-永続化はJSONファイル(`RSEC_DATA_DIR/products.json`)。詳細な設計方針・
-今後の予定は`CLAUDE.md`のHANDOFFセクションを参照。
+永続化はJSONファイル(`RSEC_DATA_DIR/products.json`・`categories.json`・
+`favorites.json`)。詳細な設計方針・今後の予定は`CLAUDE.md`の
+HANDOFFセクションを参照。
 
 ## インストール(ビルド済みバイナリ、インストーラー付き)
 
@@ -86,7 +94,9 @@ cargo build --release
 cargo test
 ```
 
-v0.1.0時点で18件(OTP認証6件+アクセス制御3件+アカウント管理2件+商品CRUD/アクセス制御を含むハンドラ統合テスト7件)。
+v0.1.0時点で22件(OTP認証6件+アクセス制御3件+アカウント管理2件+
+カテゴリ永続化1件+お気に入り永続化1件+商品CRUD/アクセス制御/カテゴリ
+絞り込み/お気に入りを含むハンドラ統合テスト9件)。
 
 ## ライセンス
 

@@ -5,11 +5,15 @@
 //!
 //! ## 正直な開示(最重要、`RGit`/`RS-Chiketto`/`RS-Blog`と同じ流儀)
 //!
-//! **v0.1.0時点では、商品カタログ(Product)のCRUDのみ実装している。**
+//! **v0.1.0時点では、商品カタログ(Product)のCRUD、カテゴリ管理、
+//! お気に入り(wishlist)のみ実装している。**
 //! EC-CUBEが持つ以下の機能は**まだ一切無い**:
 //!
-//! - カート・注文・**決済連携(実決済は将来対応、今回は一切実装しない)**
-//! - 会員管理(ポイント・お気に入り等、ログイン自体はOTP認証のみ実装)
+//! - カート・注文・**決済連携(実決済は将来対応、今回は一切実装しない)**。
+//!   お気に入り機能(`src/favorites.rs`)は「保存した商品IDのリスト」に
+//!   すぎず、数量・合計金額・注文作成・決済のいずれも持たないため
+//!   カートの代替ではない(正直な開示)。
+//! - 会員管理(ポイント等、ログイン自体はOTP認証のみ実装)
 //! - 配送・在庫管理(在庫数フィールドはあるが自動引き落とし等は無し)
 //! - プラグイン機構・管理画面(APIのみ、UIは無し)
 //!
@@ -25,6 +29,8 @@
 mod access;
 mod accounts;
 mod auth;
+mod categories;
+mod favorites;
 mod mail;
 
 use std::path::PathBuf;
@@ -33,7 +39,7 @@ use std::sync::Arc;
 use poem::listener::TcpListener;
 use poem::middleware::Tracing;
 use poem::web::Data;
-use poem::{get, handler, post, web::Path as PathExtractor, EndpointExt, Request, Response, Result as PoemResult, Route, Server};
+use poem::{delete, get, handler, post, web::Path as PathExtractor, EndpointExt, Request, Response, Result as PoemResult, Route, Server};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
@@ -102,6 +108,11 @@ struct Product {
     price_cents: u64,
     stock: u64,
     status: ProductStatus,
+    /// 所属カテゴリのID群(0個以上、多対多)。`categories.rs`の
+    /// `Category::id`を参照するが、外部キー制約は無し(JSONファイル
+    /// 永続化のため存在しないIDを指していても検証はしない)。
+    #[serde(default)]
+    categories: Vec<u64>,
     created_at: u64,
     updated_at: u64,
 }
@@ -142,6 +153,8 @@ struct CreateProductRequest {
     stock: u64,
     #[serde(default = "default_status")]
     status: ProductStatus,
+    #[serde(default)]
+    categories: Vec<u64>,
 }
 
 fn default_status() -> ProductStatus {
@@ -168,6 +181,7 @@ async fn create_product(req: &Request, state: Data<&AppState>, body: poem::web::
         price_cents: body.price_cents,
         stock: body.stock,
         status: body.status,
+        categories: body.categories.clone(),
         created_at: now,
         updated_at: now,
     };
@@ -188,10 +202,17 @@ async fn create_product(req: &Request, state: Data<&AppState>, body: poem::web::
 async fn list_products(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     check_catalog_access(req, &state, access::Need::View).await?;
     let store = load_products(&state.data_root).await;
+    let category_filter: Option<u64> = req.uri().query().and_then(|q| {
+        q.split('&').find_map(|pair| pair.strip_prefix("category=").and_then(|v| v.parse::<u64>().ok()))
+    });
+    let products: Vec<&Product> = match category_filter {
+        Some(category_id) => store.products.iter().filter(|p| p.categories.contains(&category_id)).collect(),
+        None => store.products.iter().collect(),
+    };
     Ok(Response::builder()
         .status(poem::http::StatusCode::OK)
         .content_type("application/json")
-        .body(serde_json::to_vec(&store.products).unwrap_or_default()))
+        .body(serde_json::to_vec(&products).unwrap_or_default()))
 }
 
 #[handler]
@@ -213,6 +234,7 @@ struct UpdateProductRequest {
     price_cents: Option<u64>,
     stock: Option<u64>,
     status: Option<ProductStatus>,
+    categories: Option<Vec<u64>>,
 }
 
 /// `PUT /api/products/:id` — 商品の各フィールドを更新する(カタログへの
@@ -244,6 +266,9 @@ async fn update_product(
     if let Some(status) = body.status {
         product.status = status;
     }
+    if let Some(categories) = &body.categories {
+        product.categories = categories.clone();
+    }
     product.updated_at = now_unix();
     let updated = product.clone();
     save_products(&state.data_root, &store)
@@ -267,6 +292,122 @@ async fn delete_product(req: &Request, PathExtractor(id): PathExtractor<u64>, st
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
+}
+
+#[derive(Deserialize)]
+struct CreateCategoryRequest {
+    name: String,
+    slug: String,
+}
+
+/// `POST /api/categories` — カテゴリを新規作成する(管理者のみ)。
+#[handler]
+async fn create_category(req: &Request, state: Data<&AppState>, body: poem::web::Json<CreateCategoryRequest>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    if body.name.trim().is_empty() || body.slug.trim().is_empty() {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("name and slug must not be empty"));
+    }
+    let mut store = categories::load(&state.data_root).await;
+    let id = store.next_id;
+    store.next_id += 1;
+    let category = categories::Category { id, name: body.name.clone(), slug: body.slug.clone() };
+    store.categories.push(category.clone());
+    categories::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::CREATED)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&category).unwrap_or_default()))
+}
+
+/// `GET /api/categories` — カテゴリ一覧(誰でも閲覧可、商品カタログとは
+/// 異なりアクセス制御の対象外——EC-CUBEのカテゴリツリーは通常公開情報)。
+#[handler]
+async fn list_categories(state: Data<&AppState>) -> PoemResult<Response> {
+    let store = categories::load(&state.data_root).await;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&store.categories).unwrap_or_default()))
+}
+
+/// `DELETE /api/categories/:id` — カテゴリを削除する(管理者のみ)。
+/// 削除してもそのカテゴリを参照している`Product::categories`のIDは
+/// そのまま残る(外部キー制約が無いことの直接の帰結、正直な開示)。
+#[handler]
+async fn delete_category(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let mut store = categories::load(&state.data_root).await;
+    let before = store.categories.len();
+    store.categories.retain(|c| c.id != id);
+    if store.categories.len() == before {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("category not found"));
+    }
+    categories::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
+}
+
+#[derive(Deserialize)]
+struct AddFavoriteRequest {
+    product_id: u64,
+}
+
+/// `POST /api/favorites` — ログイン中アカウントのお気に入りに商品を
+/// 1件追加する。**カートへの追加ではない**: 数量・合計金額・注文は
+/// 一切扱わない、保存した商品IDの集合のみ(`favorites.rs`参照)。
+#[handler]
+async fn add_favorite(req: &Request, state: Data<&AppState>, body: poem::web::Json<AddFavoriteRequest>) -> PoemResult<Response> {
+    let Some(email) = session_email(req, &state) else {
+        return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
+    };
+    let products = load_products(&state.data_root).await;
+    if !products.products.iter().any(|p| p.id == body.product_id) {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("product not found"));
+    }
+    let mut store = favorites::load(&state.data_root).await;
+    store.by_email.entry(email).or_default().insert(body.product_id);
+    favorites::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::CREATED).body("added"))
+}
+
+/// `GET /api/favorites` — ログイン中アカウント自身のお気に入り商品一覧
+/// (他アカウントの一覧は見えない)。
+#[handler]
+async fn list_favorites(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
+    let Some(email) = session_email(req, &state) else {
+        return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
+    };
+    let favorite_store = favorites::load(&state.data_root).await;
+    let ids = favorite_store.by_email.get(&email).cloned().unwrap_or_default();
+    let products = load_products(&state.data_root).await;
+    let favorited: Vec<&Product> = products.products.iter().filter(|p| ids.contains(&p.id)).collect();
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&favorited).unwrap_or_default()))
+}
+
+/// `DELETE /api/favorites/:product_id` — ログイン中アカウントのお気に
+/// 入りから1件削除する。
+#[handler]
+async fn remove_favorite(req: &Request, PathExtractor(product_id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    let Some(email) = session_email(req, &state) else {
+        return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
+    };
+    let mut store = favorites::load(&state.data_root).await;
+    let removed = store.by_email.get_mut(&email).map(|set| set.remove(&product_id)).unwrap_or(false);
+    if !removed {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("favorite not found"));
+    }
+    favorites::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).body("removed"))
 }
 
 /// トップページ(`GET /`)のHTMLランディングページ。
@@ -324,17 +465,21 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <tr><td><code>POST /api/accounts/request</code></td><td>アクセス許可の自己申請(認証不要)</td></tr>
 <tr><td><code>GET /api/accounts/requests</code></td><td>申請一覧(管理者のみ)</td></tr>
 <tr><td><code>POST /api/accounts/requests/:id/decide</code></td><td>申請の審査・承認/却下(管理者のみ)</td></tr>
-<tr><td><code>GET /api/products</code> / <code>POST /api/products</code></td><td>商品一覧取得 / 新規作成</td></tr>
+<tr><td><code>GET /api/products</code> / <code>POST /api/products</code></td><td>商品一覧取得(<code>?category=&lt;id&gt;</code>で絞り込み可) / 新規作成</td></tr>
 <tr><td><code>GET /api/products/:id</code></td><td>商品詳細取得</td></tr>
-<tr><td><code>PUT /api/products/:id</code></td><td>商品更新(在庫・ステータス変更含む)</td></tr>
+<tr><td><code>PUT /api/products/:id</code></td><td>商品更新(在庫・ステータス・所属カテゴリ変更含む)</td></tr>
 <tr><td><code>DELETE /api/products/:id</code></td><td>商品削除</td></tr>
+<tr><td><code>GET /api/categories</code> / <code>POST /api/categories</code></td><td>カテゴリ一覧取得(公開) / 新規作成(管理者のみ)</td></tr>
+<tr><td><code>DELETE /api/categories/:id</code></td><td>カテゴリ削除(管理者のみ)</td></tr>
+<tr><td><code>GET /api/favorites</code> / <code>POST /api/favorites</code></td><td>自分のお気に入り商品一覧取得 / 追加(要ログイン、<strong>カートではない</strong>)</td></tr>
+<tr><td><code>DELETE /api/favorites/:product_id</code></td><td>お気に入りから削除(要ログイン)</td></tr>
 </table>
 
 <div class="warn">
 <strong>正直な開示: まだ実装していない機能</strong>
 <ul>
-<li>カート・注文・決済連携(実決済は一切未実装。Stripe等のゲートウェイ呼び出し・カード情報の取り扱いは一切行っていない)</li>
-<li>会員管理(ポイント・お気に入り等)</li>
+<li><strong>カート・注文・決済連携(実決済は一切未実装。Stripe等のゲートウェイ呼び出し・カード情報の取り扱いは一切行っていない)</strong>。お気に入り機能はあるが、これは「保存した商品IDのリスト」であり数量・合計金額・注文作成を一切持たないため、購入手段では無い。</li>
+<li>会員管理(ポイント等。お気に入りのみ実装済み)</li>
 <li>配送・在庫管理(在庫数フィールドはあるが自動引き落とし等は無し)</li>
 <li>プラグイン機構・管理画面(APIのみ、UIは無し)</li>
 <li><code>aruaru-db</code>/PostgreSQL DUAL DB構成(現状はJSONファイル永続化のみ)</li>
@@ -574,6 +719,10 @@ fn build_routes(state: AppState) -> impl poem::Endpoint {
         .at("/api/accounts/requests/:id/decide", post(decide_access_request))
         .at("/api/products", get(list_products).post(create_product))
         .at("/api/products/:id", get(get_product).put(update_product).delete(delete_product))
+        .at("/api/categories", get(list_categories).post(create_category))
+        .at("/api/categories/:id", delete(delete_category))
+        .at("/api/favorites", get(list_favorites).post(add_favorite))
+        .at("/api/favorites/:product_id", delete(remove_favorite))
         .data(state)
         .with(Tracing)
 }
@@ -801,5 +950,104 @@ mod handler_tests {
 
         let after = accounts::load(&data_root).await;
         assert!(!after.emails.contains("outsider@example.com"));
+    }
+
+    #[tokio::test]
+    async fn category_filter_and_favorites_end_to_end() {
+        // curlでのOTPログインはSMTP未設定環境では実施できないため
+        // (HANDOFF既知の制約)、`TestClient`経由で管理者セッション/一般
+        // アカウントセッションを直接発行し、タスクで要求されたシナリオ
+        // (カテゴリ作成→商品作成→カテゴリ絞り込み→お気に入り追加→
+        // 一覧→削除→空であることの確認)をエンドツーエンドで検証する。
+        let state = make_state("category-favorites-e2e", false).await;
+        let data_root = state.data_root.clone();
+        let admin = admin_token(&state);
+        let member_email = "member@example.com".to_string();
+        let member_token = state.auth.create_session(&member_email);
+        {
+            let mut accounts_store = accounts::load(&data_root).await;
+            accounts_store.emails.insert(member_email.clone());
+            accounts::save(&data_root, &accounts_store).await.unwrap();
+            let mut access_config = access::load(&data_root).await;
+            access_config.accounts.insert(member_email.clone(), access::AccountPermission { allow_view: true, allow_edit: false });
+            access::save(&data_root, &access_config).await.unwrap();
+        }
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+
+        // 1. カテゴリ作成(管理者のみ)
+        let resp = client
+            .post("/api/categories")
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "name": "Books", "slug": "books" }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let category: categories::Category = resp.json().await.value().deserialize();
+
+        // 2. そのカテゴリ付きで商品作成
+        let resp = client
+            .post("/api/products")
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "name": "Rust本", "price_cents": 3000, "stock": 5, "categories": [category.id] }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let product: Product = resp.json().await.value().deserialize();
+        assert_eq!(product.categories, vec![category.id]);
+
+        // 別カテゴリなしの商品も1件作成(フィルタで除外されることの確認用)
+        client
+            .post("/api/products")
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "name": "無関係商品", "price_cents": 100, "stock": 1 }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::CREATED);
+
+        // 3. カテゴリで絞り込み(一般アカウント、view権限のみ)
+        let resp = client
+            .get(format!("/api/products?category={}", category.id))
+            .header("Authorization", format!("Bearer {member_token}"))
+            .send()
+            .await;
+        resp.assert_status_is_ok();
+        let filtered: Vec<Product> = resp.json().await.value().deserialize();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, product.id);
+
+        // 4. 一般アカウントとしてお気に入りに追加
+        let resp = client
+            .post("/api/favorites")
+            .header("Authorization", format!("Bearer {member_token}"))
+            .body_json(&serde_json::json!({ "product_id": product.id }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+
+        // 5. お気に入り一覧に出てくること(自分のものだけ)
+        let resp = client.get("/api/favorites").header("Authorization", format!("Bearer {member_token}")).send().await;
+        resp.assert_status_is_ok();
+        let favorites_list: Vec<Product> = resp.json().await.value().deserialize();
+        assert_eq!(favorites_list.len(), 1);
+        assert_eq!(favorites_list[0].id, product.id);
+
+        // 6. お気に入りから削除
+        let resp = client
+            .delete(format!("/api/favorites/{}", product.id))
+            .header("Authorization", format!("Bearer {member_token}"))
+            .send()
+            .await;
+        resp.assert_status_is_ok();
+
+        // 7. 一覧が空になっていること
+        let resp = client.get("/api/favorites").header("Authorization", format!("Bearer {member_token}")).send().await;
+        resp.assert_status_is_ok();
+        let empty: Vec<Product> = resp.json().await.value().deserialize();
+        assert!(empty.is_empty());
+
+        // カテゴリ削除(管理者のみ)の確認もついでに行う
+        let resp = client.delete(format!("/api/categories/{}", category.id)).header("Authorization", format!("Bearer {admin}")).send().await;
+        resp.assert_status_is_ok();
     }
 }
