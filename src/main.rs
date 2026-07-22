@@ -6,13 +6,18 @@
 //! ## 正直な開示(最重要、`RGit`/`RS-Chiketto`/`RS-Blog`と同じ流儀)
 //!
 //! **v0.1.0時点では、商品カタログ(Product)のCRUD、カテゴリ管理、
-//! お気に入り(wishlist)のみ実装している。**
+//! お気に入り(wishlist)、商品レビュー・評価(`src/reviews.rs`)、
+//! カート(`src/cart.rs`)・注文/決済(`src/order.rs`、モック決済のみ)
+//! を実装している。**
 //! EC-CUBEが持つ以下の機能は**まだ一切無い**:
 //!
-//! - カート・注文・**決済連携(実決済は将来対応、今回は一切実装しない)**。
-//!   お気に入り機能(`src/favorites.rs`)は「保存した商品IDのリスト」に
-//!   すぎず、数量・合計金額・注文作成・決済のいずれも持たないため
-//!   カートの代替ではない(正直な開示)。
+//! - **実決済ゲートウェイ連携(Stripe等)は未実装**。`POST /api/orders/checkout`
+//!   はカートを注文に確定するが、決済処理は`order::process_mock_payment`
+//!   という常に成功するダミー関数(金額0円のときのみ失敗)で、実際の
+//!   金銭のやり取り・カード情報の送受信は一切行わない(正直な開示)。
+//! - 在庫の自動引き落としは注文確定時に減算するのみで、予約(仮引当)・
+//!   キャンセル時の在庫復元・バックオーダー等は未実装。
+//! - 配送(送料計算・配送状況追跡)は未実装。
 //! - 会員管理(ポイント等、ログイン自体はOTP認証のみ実装)
 //! - 配送・在庫管理(在庫数フィールドはあるが自動引き落とし等は無し)
 //! - プラグイン機構・管理画面(APIのみ、UIは無し)
@@ -29,9 +34,12 @@
 mod access;
 mod accounts;
 mod auth;
+mod cart;
 mod categories;
 mod favorites;
 mod mail;
+mod order;
+mod reviews;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -410,6 +418,366 @@ async fn remove_favorite(req: &Request, PathExtractor(product_id): PathExtractor
     Ok(Response::builder().status(poem::http::StatusCode::OK).body("removed"))
 }
 
+#[derive(Deserialize)]
+struct CreateReviewRequest {
+    rating: u8,
+    title: String,
+    body: String,
+}
+
+/// `POST /api/products/:id/reviews` — ログイン中(登録アカウントまたは
+/// 管理者)のみ投稿可能。`rating`は1〜5のみ許可(それ以外は`400`)。
+/// 投稿直後は`approved: false`(`RS-Blog`のコメント承認制と同じ、
+/// 管理者承認まで一般公開の一覧・平均評価には出ない)。
+#[handler]
+async fn create_review(
+    req: &Request,
+    PathExtractor(product_id): PathExtractor<u64>,
+    state: Data<&AppState>,
+    body: poem::web::Json<CreateReviewRequest>,
+) -> PoemResult<Response> {
+    let Some(email) = session_email(req, &state) else {
+        return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
+    };
+    if body.rating < 1 || body.rating > 5 {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("rating must be between 1 and 5"));
+    }
+    let products = load_products(&state.data_root).await;
+    if !products.products.iter().any(|p| p.id == product_id) {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("product not found"));
+    }
+    let mut store = reviews::load(&state.data_root).await;
+    let id = store.next_id;
+    store.next_id += 1;
+    let review = reviews::Review {
+        id,
+        product_id,
+        author_email: email,
+        rating: body.rating,
+        title: body.title.clone(),
+        body: body.body.clone(),
+        created_at: now_unix(),
+        approved: false,
+    };
+    store.reviews.push(review.clone());
+    reviews::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::CREATED)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&review).unwrap_or_default()))
+}
+
+/// `GET /api/products/:id/reviews` — `?approved_only=true`なら誰でも
+/// 承認済みレビューのみ閲覧可(公開)。それ以外(クエリ無し、または
+/// `approved_only=false`)は管理者のみ、未承認を含む全件を返す。
+#[handler]
+async fn list_reviews(req: &Request, PathExtractor(product_id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    let approved_only = req
+        .uri()
+        .query()
+        .map(|q| q.split('&').any(|pair| pair == "approved_only=true"))
+        .unwrap_or(false);
+    let store = reviews::load(&state.data_root).await;
+    let filtered: Vec<&reviews::Review> = if approved_only {
+        store.reviews.iter().filter(|r| r.product_id == product_id && r.approved).collect()
+    } else {
+        match session_email(req, &state) {
+            Some(email) if email == state.admin_email => {}
+            Some(_) => return Err(poem::Error::from_string("insufficient permission", poem::http::StatusCode::FORBIDDEN)),
+            None => return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED)),
+        }
+        store.reviews.iter().filter(|r| r.product_id == product_id).collect()
+    };
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&filtered).unwrap_or_default()))
+}
+
+#[derive(Serialize)]
+struct RatingSummary {
+    average_rating: f32,
+    review_count: u32,
+}
+
+/// `GET /api/products/:id/rating-summary` — 公開。承認済みレビューのみ
+/// から平均評価・件数を計算する(未承認の1件が承認前に平均を歪めない
+/// ようにするため、タスク要件)。
+#[handler]
+async fn rating_summary_handler(PathExtractor(product_id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    let store = reviews::load(&state.data_root).await;
+    let for_product: Vec<&reviews::Review> = store.reviews.iter().filter(|r| r.product_id == product_id).collect();
+    let (average_rating, review_count) = reviews::rating_summary(&for_product);
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&RatingSummary { average_rating, review_count }).unwrap_or_default()))
+}
+
+/// `POST /api/reviews/:id/approve` — 管理者のみ、レビューを承認して
+/// 一般公開する。
+#[handler]
+async fn approve_review(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let mut store = reviews::load(&state.data_root).await;
+    let Some(review) = store.reviews.iter_mut().find(|r| r.id == id) else {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("review not found"));
+    };
+    review.approved = true;
+    let updated = review.clone();
+    reviews::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&updated).unwrap_or_default()))
+}
+
+/// `DELETE /api/reviews/:id` — 管理者、またはそのレビューの投稿者本人
+/// のみ削除可能。
+#[handler]
+async fn delete_review(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    let Some(email) = session_email(req, &state) else {
+        return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
+    };
+    let mut store = reviews::load(&state.data_root).await;
+    let Some(review) = store.reviews.iter().find(|r| r.id == id) else {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("review not found"));
+    };
+    if email != state.admin_email && email != review.author_email {
+        return Err(poem::Error::from_string("insufficient permission", poem::http::StatusCode::FORBIDDEN));
+    }
+    store.reviews.retain(|r| r.id != id);
+    reviews::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
+}
+
+#[derive(Serialize)]
+struct CartLine {
+    product_id: u64,
+    name: String,
+    unit_price_cents: u64,
+    quantity: u64,
+    subtotal_cents: u64,
+}
+
+#[derive(Serialize)]
+struct CartView {
+    items: Vec<CartLine>,
+    total_cents: u64,
+}
+
+async fn build_cart_view(state: &AppState, email: &str) -> CartView {
+    let cart_store = cart::load(&state.data_root).await;
+    let products = load_products(&state.data_root).await;
+    let raw_items = cart_store.by_email.get(email).cloned().unwrap_or_default();
+    let mut items = Vec::new();
+    let mut total_cents: u64 = 0;
+    for line in raw_items {
+        if let Some(product) = products.products.iter().find(|p| p.id == line.product_id) {
+            let subtotal = product.price_cents.saturating_mul(line.quantity);
+            total_cents += subtotal;
+            items.push(CartLine {
+                product_id: product.id,
+                name: product.name.clone(),
+                unit_price_cents: product.price_cents,
+                quantity: line.quantity,
+                subtotal_cents: subtotal,
+            });
+        }
+        // 商品が削除済みの場合はカート表示からは黙って除外する
+        // (`checkout`側でも同様に扱い、注文には含めない)。
+    }
+    CartView { items, total_cents }
+}
+
+/// `GET /api/cart` — ログイン中アカウント自身のカート内容(商品スナップ
+/// ショットと小計・合計)。カート自体は決済・注文作成を行わない。
+#[handler]
+async fn get_cart(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
+    let Some(email) = session_email(req, &state) else {
+        return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
+    };
+    let view = build_cart_view(&state, &email).await;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&view).unwrap_or_default()))
+}
+
+#[derive(Deserialize)]
+struct AddCartItemRequest {
+    product_id: u64,
+    #[serde(default = "default_cart_quantity")]
+    quantity: u64,
+}
+
+fn default_cart_quantity() -> u64 {
+    1
+}
+
+/// `POST /api/cart/items` — カートに商品を追加(既にあれば数量を加算)。
+/// `quantity`は1以上必須(それ以外は`400`)。商品の存在確認のみ行い、
+/// 在庫チェックは注文確定(`checkout`)時に行う(カート追加時点では
+/// 在庫を予約・引当しない、単純な実装であることの明記)。
+#[handler]
+async fn add_cart_item(req: &Request, state: Data<&AppState>, body: poem::web::Json<AddCartItemRequest>) -> PoemResult<Response> {
+    let Some(email) = session_email(req, &state) else {
+        return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
+    };
+    if body.quantity == 0 {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("quantity must be at least 1"));
+    }
+    let products = load_products(&state.data_root).await;
+    if !products.products.iter().any(|p| p.id == body.product_id) {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("product not found"));
+    }
+    let mut store = cart::load(&state.data_root).await;
+    let items = store.by_email.entry(email.clone()).or_default();
+    cart::upsert_item(items, body.product_id, body.quantity);
+    cart::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    let view = build_cart_view(&state, &email).await;
+    Ok(Response::builder().status(poem::http::StatusCode::CREATED).content_type("application/json").body(serde_json::to_vec(&view).unwrap_or_default()))
+}
+
+/// `DELETE /api/cart/items/:product_id` — カートから1商品を削除する。
+#[handler]
+async fn remove_cart_item(req: &Request, PathExtractor(product_id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    let Some(email) = session_email(req, &state) else {
+        return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
+    };
+    let mut store = cart::load(&state.data_root).await;
+    let Some(items) = store.by_email.get_mut(&email) else {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("cart item not found"));
+    };
+    let before = items.len();
+    cart::remove_item(items, product_id);
+    if items.len() == before {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("cart item not found"));
+    }
+    cart::save(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).body("removed"))
+}
+
+/// `POST /api/orders/checkout` — ログイン中アカウントのカート内容を
+/// 注文として確定する。**実際の決済は一切行わず、`order::process_mock_payment`
+/// という常に成功するダミー関数で決済成功を模擬する**(正直な開示、
+/// `CLAUDE.md`参照)。カートが空、在庫不足の商品がある場合は`400`。
+/// 成功時は各商品の在庫を数量分減算し、カートを空にする。
+#[handler]
+async fn checkout(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
+    let Some(email) = session_email(req, &state) else {
+        return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
+    };
+    let mut cart_store = cart::load(&state.data_root).await;
+    let raw_items = cart_store.by_email.get(&email).cloned().unwrap_or_default();
+    if raw_items.is_empty() {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("cart is empty"));
+    }
+
+    let mut product_store = load_products(&state.data_root).await;
+    let mut order_items = Vec::new();
+    let mut total_cents: u64 = 0;
+    for line in &raw_items {
+        let Some(product) = product_store.products.iter().find(|p| p.id == line.product_id) else {
+            return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body(format!("product {} no longer exists", line.product_id)));
+        };
+        if product.stock < line.quantity {
+            return Ok(Response::builder()
+                .status(poem::http::StatusCode::BAD_REQUEST)
+                .body(format!("insufficient stock for product {} (have {}, requested {})", product.id, product.stock, line.quantity)));
+        }
+        let subtotal = product.price_cents.saturating_mul(line.quantity);
+        total_cents += subtotal;
+        order_items.push(order::OrderItem {
+            product_id: product.id,
+            name: product.name.clone(),
+            unit_price_cents: product.price_cents,
+            quantity: line.quantity,
+        });
+    }
+
+    let (paid, payment_reference) = order::process_mock_payment(total_cents);
+    let now = now_unix();
+    let mut order_store = order::load(&state.data_root).await;
+    let id = order_store.next_id;
+    order_store.next_id += 1;
+    let status = if paid { order::OrderStatus::Paid } else { order::OrderStatus::PaymentFailed };
+    let new_order = order::Order {
+        id,
+        email: email.clone(),
+        items: order_items,
+        total_cents,
+        status,
+        payment_reference,
+        created_at: now,
+        updated_at: now,
+    };
+
+    if paid {
+        // 在庫引き落とし(単純な即時減算、予約・バックオーダーは未実装)
+        for line in &raw_items {
+            if let Some(product) = product_store.products.iter_mut().find(|p| p.id == line.product_id) {
+                product.stock -= line.quantity;
+                product.updated_at = now;
+                if product.stock == 0 {
+                    product.status = ProductStatus::SoldOut;
+                }
+            }
+        }
+        save_products(&state.data_root, &product_store)
+            .await
+            .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+        cart_store.by_email.remove(&email);
+        cart::save(&state.data_root, &cart_store)
+            .await
+            .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    }
+
+    order_store.orders.push(new_order.clone());
+    order::save(&state.data_root, &order_store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+
+    let response_status = if paid { poem::http::StatusCode::CREATED } else { poem::http::StatusCode::PAYMENT_REQUIRED };
+    Ok(Response::builder().status(response_status).content_type("application/json").body(serde_json::to_vec(&new_order).unwrap_or_default()))
+}
+
+/// `GET /api/orders` — ログイン中アカウント自身の注文一覧(管理者は
+/// 常に全アカウントの注文一覧が見える)。
+#[handler]
+async fn list_orders(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
+    let Some(email) = session_email(req, &state) else {
+        return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
+    };
+    let store = order::load(&state.data_root).await;
+    let orders: Vec<&order::Order> = if email == state.admin_email {
+        store.orders.iter().collect()
+    } else {
+        store.orders.iter().filter(|o| o.email == email).collect()
+    };
+    Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&orders).unwrap_or_default()))
+}
+
+/// `GET /api/orders/:id` — 本人または管理者のみ閲覧可能。
+#[handler]
+async fn get_order(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    let Some(email) = session_email(req, &state) else {
+        return Err(poem::Error::from_string("login required", poem::http::StatusCode::UNAUTHORIZED));
+    };
+    let store = order::load(&state.data_root).await;
+    let Some(found) = store.orders.iter().find(|o| o.id == id) else {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("order not found"));
+    };
+    if found.email != email && email != state.admin_email {
+        return Err(poem::Error::from_string("insufficient permission", poem::http::StatusCode::FORBIDDEN));
+    }
+    Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(found).unwrap_or_default()))
+}
+
 /// トップページ(`GET /`)のHTMLランディングページ。
 /// ブラウザで実インスタンスへアクセスしたユーザーへ、アプリの概要・
 /// 実装済みAPI一覧・カート/注文/決済が一切無いことの正直な開示・
@@ -473,12 +841,18 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <tr><td><code>DELETE /api/categories/:id</code></td><td>カテゴリ削除(管理者のみ)</td></tr>
 <tr><td><code>GET /api/favorites</code> / <code>POST /api/favorites</code></td><td>自分のお気に入り商品一覧取得 / 追加(要ログイン、<strong>カートではない</strong>)</td></tr>
 <tr><td><code>DELETE /api/favorites/:product_id</code></td><td>お気に入りから削除(要ログイン)</td></tr>
+<tr><td><code>POST /api/products/:id/reviews</code></td><td>レビュー投稿(要ログイン、1〜5の評価必須、投稿直後は未承認)</td></tr>
+<tr><td><code>GET /api/products/:id/reviews?approved_only=true</code></td><td>承認済みレビュー一覧(公開)</td></tr>
+<tr><td><code>GET /api/products/:id/reviews</code></td><td>全レビュー一覧(未承認含む、管理者のみ)</td></tr>
+<tr><td><code>GET /api/products/:id/rating-summary</code></td><td>承認済みレビューのみで算出した平均評価・件数(公開)</td></tr>
+<tr><td><code>POST /api/reviews/:id/approve</code></td><td>レビューを承認して公開(管理者のみ)</td></tr>
+<tr><td><code>DELETE /api/reviews/:id</code></td><td>レビュー削除(管理者、または投稿者本人)</td></tr>
 </table>
 
 <div class="warn">
 <strong>正直な開示: まだ実装していない機能</strong>
 <ul>
-<li><strong>カート・注文・決済連携(実決済は一切未実装。Stripe等のゲートウェイ呼び出し・カード情報の取り扱いは一切行っていない)</strong>。お気に入り機能はあるが、これは「保存した商品IDのリスト」であり数量・合計金額・注文作成を一切持たないため、購入手段では無い。</li>
+<li><strong>カート・注文・決済連携(実決済は一切未実装。Stripe等のゲートウェイ呼び出し・カード情報の取り扱いは一切行っていない)</strong>。お気に入り機能・レビュー/評価機能はあるが、いずれも「保存した商品IDのリスト」「投稿されたテキストと星評価」に過ぎず、数量・合計金額・注文作成・購入確認(いわゆるverified purchase)を一切持たないため、購入手段では無い。</li>
 <li>会員管理(ポイント等。お気に入りのみ実装済み)</li>
 <li>配送・在庫管理(在庫数フィールドはあるが自動引き落とし等は無し)</li>
 <li>プラグイン機構・管理画面(APIのみ、UIは無し)</li>
@@ -723,6 +1097,16 @@ fn build_routes(state: AppState) -> impl poem::Endpoint {
         .at("/api/categories/:id", delete(delete_category))
         .at("/api/favorites", get(list_favorites).post(add_favorite))
         .at("/api/favorites/:product_id", delete(remove_favorite))
+        .at("/api/products/:id/reviews", get(list_reviews).post(create_review))
+        .at("/api/products/:id/rating-summary", get(rating_summary_handler))
+        .at("/api/reviews/:id/approve", post(approve_review))
+        .at("/api/reviews/:id", delete(delete_review))
+        .at("/api/cart", get(get_cart))
+        .at("/api/cart/items", post(add_cart_item))
+        .at("/api/cart/items/:product_id", delete(remove_cart_item))
+        .at("/api/orders/checkout", post(checkout))
+        .at("/api/orders", get(list_orders))
+        .at("/api/orders/:id", get(get_order))
         .data(state)
         .with(Tracing)
 }
@@ -762,6 +1146,7 @@ mod handler_tests {
     //! テストごとに独立した一時ディレクトリを直接`AppState`へ渡す。
 
     use super::*;
+    use crate::reviews::Review;
     use poem::test::TestClient;
 
     const ADMIN_EMAIL: &str = "admin@example.com";
@@ -1048,6 +1433,323 @@ mod handler_tests {
 
         // カテゴリ削除(管理者のみ)の確認もついでに行う
         let resp = client.delete(format!("/api/categories/{}", category.id)).header("Authorization", format!("Bearer {admin}")).send().await;
+        resp.assert_status_is_ok();
+    }
+
+    /// テスト用に商品を1件作成し、そのIDを返す小ヘルパー(レビュー系
+    /// テストで繰り返し使う)。
+    async fn seed_product(client: &TestClient<impl poem::Endpoint>, admin_token: &str) -> u64 {
+        let resp = client
+            .post("/api/products")
+            .header("Authorization", format!("Bearer {admin_token}"))
+            .body_json(&serde_json::json!({ "name": "Gadget", "description": "d", "price_cents": 500, "stock": 3 }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let product: Product = resp.json().await.value().deserialize();
+        product.id
+    }
+
+    #[tokio::test]
+    async fn review_creation_requires_authentication() {
+        let state = make_state("review-auth-required", false).await;
+        let admin = admin_token(&state);
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+        let product_id = seed_product(&client, &admin).await;
+
+        let resp = client
+            .post(format!("/api/products/{product_id}/reviews"))
+            .body_json(&serde_json::json!({ "rating": 5, "title": "Great", "body": "Loved it" }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn review_creation_rejects_invalid_rating() {
+        let state = make_state("review-invalid-rating", false).await;
+        let admin = admin_token(&state);
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+        let product_id = seed_product(&client, &admin).await;
+
+        for bad_rating in [0, 6] {
+            let resp = client
+                .post(format!("/api/products/{product_id}/reviews"))
+                .header("Authorization", format!("Bearer {admin}"))
+                .body_json(&serde_json::json!({ "rating": bad_rating, "title": "x", "body": "y" }))
+                .send()
+                .await;
+            resp.assert_status(poem::http::StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[tokio::test]
+    async fn unapproved_reviews_are_hidden_from_public_listing_and_summary_until_approved() {
+        let state = make_state("review-moderation", false).await;
+        let admin = admin_token(&state);
+        let member_email = "member@example.com".to_string();
+        let member_token = state.auth.create_session(&member_email);
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+        let product_id = seed_product(&client, &admin).await;
+
+        // 会員がレビューを投稿(投稿直後は未承認)
+        let resp = client
+            .post(format!("/api/products/{product_id}/reviews"))
+            .header("Authorization", format!("Bearer {member_token}"))
+            .body_json(&serde_json::json!({ "rating": 4, "title": "Nice", "body": "Works well" }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let created: Review = resp.json().await.value().deserialize();
+        assert!(!created.approved);
+
+        // 公開一覧(approved_only=true)にはまだ出ない
+        let resp = client.get(format!("/api/products/{product_id}/reviews?approved_only=true")).send().await;
+        resp.assert_status_is_ok();
+        let public_list: Vec<Review> = resp.json().await.value().deserialize();
+        assert!(public_list.is_empty());
+
+        // rating-summaryも未承認のみでは0件・平均0
+        let resp = client.get(format!("/api/products/{product_id}/rating-summary")).send().await;
+        resp.assert_status_is_ok();
+        let summary: serde_json::Value = resp.json().await.value().deserialize();
+        assert_eq!(summary["review_count"], 0);
+
+        // 一般公開されていない全件一覧は管理者のみ(会員は403、未ログインは401)
+        let resp = client.get(format!("/api/products/{product_id}/reviews")).send().await;
+        resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
+        let resp = client
+            .get(format!("/api/products/{product_id}/reviews"))
+            .header("Authorization", format!("Bearer {member_token}"))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::FORBIDDEN);
+
+        // 管理者が承認
+        let resp = client
+            .post(format!("/api/reviews/{}/approve", created.id))
+            .header("Authorization", format!("Bearer {admin}"))
+            .send()
+            .await;
+        resp.assert_status_is_ok();
+        let approved: Review = resp.json().await.value().deserialize();
+        assert!(approved.approved);
+
+        // 今度は公開一覧・rating-summaryに反映される
+        let resp = client.get(format!("/api/products/{product_id}/reviews?approved_only=true")).send().await;
+        resp.assert_status_is_ok();
+        let public_list: Vec<Review> = resp.json().await.value().deserialize();
+        assert_eq!(public_list.len(), 1);
+
+        let resp = client.get(format!("/api/products/{product_id}/rating-summary")).send().await;
+        resp.assert_status_is_ok();
+        let summary: serde_json::Value = resp.json().await.value().deserialize();
+        assert_eq!(summary["review_count"], 1);
+        assert_eq!(summary["average_rating"], 4.0);
+    }
+
+    #[tokio::test]
+    async fn rating_summary_math_is_correct_for_a_known_set_of_approved_reviews() {
+        let state = make_state("rating-summary-math", false).await;
+        let admin = admin_token(&state);
+        let member_token = state.auth.create_session(&"member2@example.com".to_string());
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+        let product_id = seed_product(&client, &admin).await;
+
+        // 承認済み2件(rating 5, 3) + 未承認1件(rating 1) => 平均は(5+3)/2=4.0、件数2
+        for rating in [5u8, 3u8, 1u8] {
+            let resp = client
+                .post(format!("/api/products/{product_id}/reviews"))
+                .header("Authorization", format!("Bearer {member_token}"))
+                .body_json(&serde_json::json!({ "rating": rating, "title": "t", "body": "b" }))
+                .send()
+                .await;
+            resp.assert_status(poem::http::StatusCode::CREATED);
+            let created: Review = resp.json().await.value().deserialize();
+            if rating != 1 {
+                let resp = client
+                    .post(format!("/api/reviews/{}/approve", created.id))
+                    .header("Authorization", format!("Bearer {admin}"))
+                    .send()
+                    .await;
+                resp.assert_status_is_ok();
+            }
+        }
+
+        let resp = client.get(format!("/api/products/{product_id}/rating-summary")).send().await;
+        resp.assert_status_is_ok();
+        let summary: serde_json::Value = resp.json().await.value().deserialize();
+        assert_eq!(summary["review_count"], 2);
+        assert_eq!(summary["average_rating"], 4.0);
+    }
+
+    #[tokio::test]
+    async fn review_delete_allowed_for_admin_and_author_but_not_other_members() {
+        let state = make_state("review-delete-permissions", false).await;
+        let admin = admin_token(&state);
+        let author_token = state.auth.create_session(&"author@example.com".to_string());
+        let other_token = state.auth.create_session(&"other@example.com".to_string());
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+        let product_id = seed_product(&client, &admin).await;
+
+        let resp = client
+            .post(format!("/api/products/{product_id}/reviews"))
+            .header("Authorization", format!("Bearer {author_token}"))
+            .body_json(&serde_json::json!({ "rating": 2, "title": "meh", "body": "b" }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let review: Review = resp.json().await.value().deserialize();
+
+        // 他人は削除不可
+        let resp = client
+            .delete(format!("/api/reviews/{}", review.id))
+            .header("Authorization", format!("Bearer {other_token}"))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::FORBIDDEN);
+
+        // 投稿者本人は削除可能
+        let resp = client
+            .delete(format!("/api/reviews/{}", review.id))
+            .header("Authorization", format!("Bearer {author_token}"))
+            .send()
+            .await;
+        resp.assert_status_is_ok();
+    }
+
+    #[tokio::test]
+    async fn cart_add_checkout_decrements_stock_and_creates_paid_order() {
+        // 商品登録→カート追加→注文確定(モック決済)→在庫減算・カート空化・
+        // 本人のみ注文閲覧可、を一気通貫で検証する(タスク要件のE2Eシナリオ)。
+        let state = make_state("cart-checkout", false).await;
+        let admin = admin_token(&state);
+        let member_token = state.auth.create_session("member@example.com");
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+
+        let resp = client
+            .post("/api/products")
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "name": "Gadget", "price_cents": 500, "stock": 3, "status": "on_sale" }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let product: Product = resp.json().await.value().deserialize();
+
+        // カート未ログインは401
+        let resp = client.get("/api/cart").send().await;
+        resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
+
+        // カートに2個追加
+        let resp = client
+            .post("/api/cart/items")
+            .header("Authorization", format!("Bearer {member_token}"))
+            .body_json(&serde_json::json!({ "product_id": product.id, "quantity": 2 }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let cart_view: serde_json::Value = resp.json().await.value().deserialize();
+        assert_eq!(cart_view["total_cents"], 1000);
+
+        // 在庫を超える注文は400
+        let resp = client
+            .post("/api/cart/items")
+            .header("Authorization", format!("Bearer {member_token}"))
+            .body_json(&serde_json::json!({ "product_id": product.id, "quantity": 5 }))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED); // カート追加自体は在庫チェックしない
+        let resp = client
+            .post("/api/orders/checkout")
+            .header("Authorization", format!("Bearer {member_token}"))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::BAD_REQUEST); // 合計7個、在庫3個のため不足
+
+        // カートを在庫内(2個)に戻してから確定
+        let resp = client
+            .delete(format!("/api/cart/items/{}", product.id))
+            .header("Authorization", format!("Bearer {member_token}"))
+            .send()
+            .await;
+        resp.assert_status_is_ok();
+        client
+            .post("/api/cart/items")
+            .header("Authorization", format!("Bearer {member_token}"))
+            .body_json(&serde_json::json!({ "product_id": product.id, "quantity": 2 }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::CREATED);
+
+        let resp = client
+            .post("/api/orders/checkout")
+            .header("Authorization", format!("Bearer {member_token}"))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let order: order::Order = resp.json().await.value().deserialize();
+        assert_eq!(order.total_cents, 1000);
+        assert!(matches!(order.status, order::OrderStatus::Paid));
+        assert!(order.payment_reference.starts_with("MOCK-"));
+
+        // カートは空になっている
+        let resp = client.get("/api/cart").header("Authorization", format!("Bearer {member_token}")).send().await;
+        let cart_view: serde_json::Value = resp.json().await.value().deserialize();
+        assert_eq!(cart_view["items"].as_array().unwrap().len(), 0);
+
+        // 在庫が2個減って1個になっている
+        let resp = client.get(format!("/api/products/{}", product.id)).header("Authorization", format!("Bearer {admin}")).send().await;
+        let updated_product: Product = resp.json().await.value().deserialize();
+        assert_eq!(updated_product.stock, 1);
+
+        // 本人は注文を閲覧できる
+        let resp = client
+            .get(format!("/api/orders/{}", order.id))
+            .header("Authorization", format!("Bearer {member_token}"))
+            .send()
+            .await;
+        resp.assert_status_is_ok();
+    }
+
+    #[tokio::test]
+    async fn other_member_cannot_view_someone_elses_order() {
+        let state = make_state("order-privacy", false).await;
+        let admin = admin_token(&state);
+        let owner_token = state.auth.create_session("owner@example.com");
+        let other_token = state.auth.create_session("other@example.com");
+        let app = build_routes(state);
+        let client = TestClient::new(app);
+
+        let resp = client
+            .post("/api/products")
+            .header("Authorization", format!("Bearer {admin}"))
+            .body_json(&serde_json::json!({ "name": "Thing", "price_cents": 200, "stock": 5, "status": "on_sale" }))
+            .send()
+            .await;
+        let product: Product = resp.json().await.value().deserialize();
+
+        client
+            .post("/api/cart/items")
+            .header("Authorization", format!("Bearer {owner_token}"))
+            .body_json(&serde_json::json!({ "product_id": product.id, "quantity": 1 }))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::CREATED);
+
+        let resp = client.post("/api/orders/checkout").header("Authorization", format!("Bearer {owner_token}")).send().await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let order: order::Order = resp.json().await.value().deserialize();
+
+        let resp = client.get(format!("/api/orders/{}", order.id)).header("Authorization", format!("Bearer {other_token}")).send().await;
+        resp.assert_status(poem::http::StatusCode::FORBIDDEN);
+
+        let resp = client.get(format!("/api/orders/{}", order.id)).header("Authorization", format!("Bearer {admin}")).send().await;
         resp.assert_status_is_ok();
     }
 }
