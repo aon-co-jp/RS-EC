@@ -17,6 +17,6 @@
 - [RPoem](https://github.com/aon-co-jp/RPoem) — アプリケーションサーバー層(旧poem-cosmo-tauri)
 - Python製AIライブラリのRust移植ハイブリッド/トライブリッド版(vLLM/Transformers/NumPy/PyTorch互換/scikit-learn/Whisper相当) — Rustを基本とし必要なら`RPoem`も併用、`open-cuda`の`opencuda-blas`/`opencuda-bert`が実体
 
-着手後、実際に他プロジェクトへ移植可能な形になった時点で、`RGit`や
+着手後、実際に他プロジェクトへ移植可能な形になった時点で、`RS-Git`や
 `RJSON`の`PORTING.md`と同じ構成(依存の追加手順・共通パターンの
 コピー手順・注意事項)に更新すること。
