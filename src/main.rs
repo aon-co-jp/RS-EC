@@ -269,6 +269,98 @@ async fn delete_product(req: &Request, PathExtractor(id): PathExtractor<u64>, st
     Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
 }
 
+/// トップページ(`GET /`)のHTMLランディングページ。
+/// ブラウザで実インスタンスへアクセスしたユーザーへ、アプリの概要・
+/// 実装済みAPI一覧・カート/注文/決済が一切無いことの正直な開示・
+/// ダウンロードリンクを示す(JSON APIのみで何も表示されないUXバグの修正)。
+const INDEX_HTML: &str = r#"<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RS-EC</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #222; }
+  h1 { margin-bottom: 0; }
+  .tagline { color: #666; margin-top: 0.2rem; }
+  code { background: #f2f2f2; padding: 0.1rem 0.35rem; border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #ddd; font-size: 0.92rem; }
+  .warn { background: #fff8e1; border: 1px solid #ffe08a; border-radius: 6px; padding: 0.8rem 1rem; }
+  .danger { background: #fdecea; border: 1px solid #f5b8b0; border-radius: 6px; padding: 0.8rem 1rem; }
+  .btn { display: inline-block; background: #2d6cdf; color: #fff; padding: 0.5rem 1rem; border-radius: 6px; text-decoration: none; margin-right: 0.5rem; }
+  footer { color: #888; font-size: 0.85rem; margin-top: 2rem; }
+</style>
+</head>
+<body>
+<h1>RS-EC</h1>
+<p class="tagline">EC-CUBE相当のECエンジン — Rust + poem(RPoem)製、高速・高セキュリティ・省メモリ志向。v0.1.0。</p>
+
+<div class="danger">
+<strong>重要: 決済・カート機能はまだ一切ありません</strong>
+<p>
+  v0.1.0時点では商品カタログ(Product)のCRUDとOTPログイン(管理者+
+  登録アカウント)のみを実装しています。<strong>カート・注文・決済連携
+  (Stripe等)は一切実装していません。</strong>支払い情報・カード情報を
+  扱う処理はコード内に一切存在しません。
+</p>
+</div>
+
+<h2>これは何?</h2>
+<p>
+  <a href="https://www.ec-cube.net/">EC-CUBE</a>のRust版を目指すプロジェクトです。
+  実決済連携までを将来目標としていますが、現時点では商品カタログ管理のみです。
+</p>
+
+<h2>使い方: 現在はJSON APIのみ(ブラウザUIはまだありません)</h2>
+<p>このページ以外はすべてJSON APIです。以下のエンドポイントに対して<code>curl</code>や外部クライアントからアクセスしてください。</p>
+<table>
+<tr><th>メソッド / パス</th><th>説明</th></tr>
+<tr><td><code>GET /healthz</code></td><td>ヘルスチェック</td></tr>
+<tr><td><code>POST /api/auth/request-otp</code></td><td>ログイン用ワンタイムパスワードをメール送信(管理者+登録アカウント)</td></tr>
+<tr><td><code>POST /api/auth/verify-otp</code></td><td>OTPを検証してセッショントークンを発行</td></tr>
+<tr><td><code>POST /api/auth/logout</code></td><td>ログアウト(トークン失効)</td></tr>
+<tr><td><code>GET /api/accounts</code> / <code>POST /api/accounts</code></td><td>登録済みメールアドレスの一覧・追加(管理者のみ)</td></tr>
+<tr><td><code>POST /api/accounts/request</code></td><td>アクセス許可の自己申請(認証不要)</td></tr>
+<tr><td><code>GET /api/accounts/requests</code></td><td>申請一覧(管理者のみ)</td></tr>
+<tr><td><code>POST /api/accounts/requests/:id/decide</code></td><td>申請の審査・承認/却下(管理者のみ)</td></tr>
+<tr><td><code>GET /api/products</code> / <code>POST /api/products</code></td><td>商品一覧取得 / 新規作成</td></tr>
+<tr><td><code>GET /api/products/:id</code></td><td>商品詳細取得</td></tr>
+<tr><td><code>PUT /api/products/:id</code></td><td>商品更新(在庫・ステータス変更含む)</td></tr>
+<tr><td><code>DELETE /api/products/:id</code></td><td>商品削除</td></tr>
+</table>
+
+<div class="warn">
+<strong>正直な開示: まだ実装していない機能</strong>
+<ul>
+<li>カート・注文・決済連携(実決済は一切未実装。Stripe等のゲートウェイ呼び出し・カード情報の取り扱いは一切行っていない)</li>
+<li>会員管理(ポイント・お気に入り等)</li>
+<li>配送・在庫管理(在庫数フィールドはあるが自動引き落とし等は無し)</li>
+<li>プラグイン機構・管理画面(APIのみ、UIは無し)</li>
+<li><code>aruaru-db</code>/PostgreSQL DUAL DB構成(現状はJSONファイル永続化のみ)</li>
+</ul>
+</div>
+
+<h2>ダウンロード / インストール</h2>
+<p>
+  <a class="btn" href="https://github.com/aon-co-jp/RS-EC/releases/latest">最新リリースをダウンロード</a>
+  <a class="btn" href="https://github.com/aon-co-jp/RS-EC">GitHubでソースを見る</a>
+</p>
+<p>Linux(静的リンクmuslバイナリ)・Windows向けにインストーラー付きビルド済みバイナリを配布しています。詳細は<a href="https://github.com/aon-co-jp/RS-EC#readme">README</a>参照。</p>
+
+<footer>RS-EC v0.1.0 &mdash; <a href="https://github.com/aon-co-jp/RS-EC">aon-co-jp/RS-EC</a></footer>
+</body>
+</html>
+"#;
+
+#[handler]
+async fn index() -> Response {
+    Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("text/html; charset=utf-8")
+        .body(INDEX_HTML)
+}
+
 #[handler]
 async fn healthz() -> &'static str {
     "ok"
@@ -471,6 +563,7 @@ fn env_data_dir() -> PathBuf {
 /// 再利用できるように切り出したもの。
 fn build_routes(state: AppState) -> impl poem::Endpoint {
     Route::new()
+        .at("/", get(index))
         .at("/healthz", get(healthz))
         .at("/api/auth/request-otp", post(request_otp))
         .at("/api/auth/verify-otp", post(verify_otp))
@@ -537,6 +630,22 @@ mod handler_tests {
 
     fn admin_token(state: &AppState) -> String {
         state.auth.create_session(ADMIN_EMAIL)
+    }
+
+    #[tokio::test]
+    async fn root_returns_landing_page_with_key_markers() {
+        // UXバグ修正の検証: JSON APIオンリーで何も表示されなかった`GET /`が
+        // アプリ名・実エンドポイント・決済未実装の開示・ダウンロードリンクを
+        // 含むHTMLを返すこと。
+        let state = make_state("root", true).await;
+        let client = TestClient::new(build_routes(state));
+        let resp = client.get("/").send().await;
+        resp.assert_status_is_ok();
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains("RS-EC"));
+        assert!(body.contains("/api/products"));
+        assert!(body.contains("カート・注文・決済連携"));
+        assert!(body.contains("https://github.com/aon-co-jp/RS-EC/releases/latest"));
     }
 
     #[tokio::test]
