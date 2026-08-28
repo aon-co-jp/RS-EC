@@ -63,6 +63,64 @@ VPS上の作業パス: `/root/RS-EC`(空フォルダ作成済み、2026-07-21)�
 
 ## HANDOFF
 
+- **2026-08-28 ログイン4択方式の横展開: `otp_qr`(QR確認2FA)+`login_mode`
+  管理APIを追加(open-english/open-easy-web/RS-Blogと同じパターンだが
+  複数アカウント制のためスコープを絞った)**: `F:\runo\PORTING.md`の
+  「ログイン方式4択…横展開チェックポイント」節の対応、6リポジトリ中
+  2番目。
+  1. **「パスワード無し」に加え、QR単体(no-OTP)ログインも意図的に
+     非実装(正直な設計判断)**: `RS-Blog`(単一固定管理者)や
+     open-easy-web(TOTP登録済みアカウントのみqr可)とは異なり、RS-EC
+     は`accounts.rs`による複数の登録メールアドレス(会員+管理者)を持ち、
+     TOTP等の事前登録済み第二要素も無い。「メールアドレスさえ知って
+     いればQRセッションを開始できてしまう」設計は注文・決済に関わる
+     アカウントの完全性を損なうため、`login_mode`は`otp`(既定)・
+     `otp_qr`(OTP検証成功後にQR確認を第二要素として要求する真の2FA)
+     の2値のみとした。`auth::is_valid_login_mode`は`"qr"`/`"none"`を
+     明示的に拒否する。
+  2. **`src/auth.rs`**: `login_mode`(`Mutex<String>`、既定`"otp"`)・
+     `qr_logins`(QRログインセッション、3分TTL・1回限り)を`AuthStore`
+     へ追加。`start_qr_login`は常に「OTP検証成功後の第二要素」として
+     のみ呼ばれる設計(モジュールdocに明記、QR単体でのログイン開始
+     エンドポイントはmain.rs側にも存在しない)。
+  3. **`src/main.rs`**: `GET/POST /api/auth/login-mode`(GETは未ログイン
+     可、POSTは管理者セッション必須)・`GET /api/auth/qr-login/
+     {whoami,status}`・`POST /api/auth/qr-login/{confirm,finish}`・
+     `GET /qr-confirm.html`(open-english/RS-Blog版をRS-ECブランディング
+     へ差し替え)。既存の`verify_otp`ハンドラを拡張し、`login_mode`が
+     `otp_qr`の場合はセッションを即発行せず`{"qr_required": true,
+     "qr_id": ...}`を返すようにした。**`POST /api/auth/qr-login/start`
+     は存在しない**(上記1番の設計判断により、QRセッションは常に
+     `verify_otp`経由でのみ開始される)。
+  4. **実機検証(型チェック・ビルド成功だけで完了と報告しない方針の
+     徹底)**: `cargo build`成功(警告0件)。`cargo test`
+     **47件全green**(新規10件: `auth::tests`5件+`handler_tests`4件、
+     既存37件から回帰なし)。`handler_tests`側は実HTTP相当の統合テスト
+     (`otp_qr_mode_requires_qr_confirmation_as_second_factor_over_
+     real_http`——OTP検証→qr_required確認→確認前finish拒否→confirm→
+     status確認→finish→セッション発行→保護API到達→二重finish拒否まで
+     一気通貫、`login_mode_defaults_to_otp_and_requires_admin_session_
+     to_change`——未ログイン変更401・`"qr"`指定400・管理者ログイン後の
+     変更成功、`otp_mode_verify_otp_still_issues_a_session_directly`
+     ——既定`otp`モードでの既存挙動の非回帰確認)。さらに実バイナリを
+     起動し、curl経由で`GET /`(200)・`GET /api/auth/login-mode`
+     (`{"login_mode":"otp"}`)・未ログインでの`GET /api/products`
+     (401、既存のprivateカタログ挙動)・未ログインでの
+     `POST /api/auth/login-mode`(401)・`GET /qr-confirm.html`
+     (RS-ECブランディング付きHTML)を実HTTPで確認した。
+  5. **正直な開示・未実施**: この開発機にSMTPサーバーが用意できない
+     ため、実際のメール送信を経由した`otp_qr`モードのフルE2E
+     (実メール受信→OTP入力→QR確認→ログイン)はcurlでは検証していない
+     (`cargo test`内の`TestClient`による実HTTP相当の統合テストで代替、
+     既存のOTP関連検証と同じ制約)。実際のQRコード画像生成・スマホ
+     実機でのカメラ撮影によるURL起動も未検証(RS-EC自体にまだ
+     ブラウザUIが無く、JSON APIのみのため対象外——`RS-Blog`と同じ
+     制約)。
+  - 次にすべきこと: (1) 残り4リポジトリ(RS-Ops/open-gitea/
+    open-redmine/rs-sync)への同様の横展開、(2) 実SMTP環境での
+    `otp_qr`フルE2E検証、(3) RS-EC自体のブラウザUI実装時にQRコード
+    画像のレンダリング(`qrcode`crate等)を追加する。
+
 - **2026-07-21 プロジェクト新設(器のみ)**: GitHub空リポジトリ・
   VPS空フォルダ・ローカル作業フォルダを用意。次回、`RS-Git`と同じ構成
   (`Cargo.toml`+`poem`)でのブートストラップに着手する。

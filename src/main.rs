@@ -61,6 +61,13 @@ struct AppState {
     accounts_locked: bool,
 }
 
+/// `req.uri().query()`から`key=`のペアを素朴に取り出す(URLデコードは
+/// 行わない——本ファイルのクエリパラメータはID等の英数字のみのため
+/// 簡易実装で足りる)。
+fn query_param(req: &Request, key: &str) -> Option<String> {
+    req.uri().query().and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix(&format!("{key}=")).map(|v| v.to_string())))
+}
+
 fn require_admin_session(req: &Request, state: &AppState) -> PoemResult<()> {
     let header = req.header(poem::http::header::AUTHORIZATION).unwrap_or("");
     let token = header.strip_prefix("Bearer ").unwrap_or("");
@@ -829,6 +836,12 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <tr><td><code>POST /api/auth/request-otp</code></td><td>ログイン用ワンタイムパスワードをメール送信(管理者+登録アカウント)</td></tr>
 <tr><td><code>POST /api/auth/verify-otp</code></td><td>OTPを検証してセッショントークンを発行</td></tr>
 <tr><td><code>POST /api/auth/logout</code></td><td>ログアウト(トークン失効)</td></tr>
+<tr><td><code>GET</code> / <code>POST /api/auth/login-mode</code></td><td>ログイン方式の取得(未ログイン可) / 変更(<code>otp</code>/<code>otp_qr</code>、管理者ログイン必須)</td></tr>
+<tr><td><code>GET /api/auth/qr-login/whoami?id=</code></td><td>QR確認ページ向け、マスク済みメールアドレス取得</td></tr>
+<tr><td><code>POST /api/auth/qr-login/confirm</code></td><td>QR確認ページが自動的に呼ぶ、確認済みにする</td></tr>
+<tr><td><code>GET /api/auth/qr-login/status?id=</code></td><td>プライマリ端末がポーリングして確認状況を見る</td></tr>
+<tr><td><code>POST /api/auth/qr-login/finish</code></td><td>確認済みならセッショントークンを発行(<code>otp_qr</code>モードの第二要素)</td></tr>
+<tr><td><code>GET /qr-confirm.html</code></td><td>QR撮影用の確認ページ(スマホ/タブレット/WEBカメラで開く)</td></tr>
 <tr><td><code>GET /api/accounts</code> / <code>POST /api/accounts</code></td><td>登録済みメールアドレスの一覧・追加(管理者のみ)</td></tr>
 <tr><td><code>POST /api/accounts/request</code></td><td>アクセス許可の自己申請(認証不要)</td></tr>
 <tr><td><code>GET /api/accounts/requests</code></td><td>申請一覧(管理者のみ)</td></tr>
@@ -913,18 +926,252 @@ struct VerifyOtpRequest {
     code: String,
 }
 
+/// `POST /api/auth/verify-otp` — `login_mode`が`"otp_qr"`の場合は
+/// OTP成功後にセッションを即発行せず、QR確認(第二要素)セッションを
+/// 開始して`{"qr_required": true, "qr_id": ...}`を返す(真の2FA)。
+/// それ以外(既定の`"otp"`)は従来通りセッショントークンを即発行する。
 #[handler]
 async fn verify_otp(state: Data<&AppState>, body: poem::web::Json<VerifyOtpRequest>) -> PoemResult<Response> {
     match state.auth.consume_otp(&body.email, &body.code) {
         Ok(()) => {
-            let token = state.auth.create_session(&body.email);
-            Ok(Response::builder()
-                .status(poem::http::StatusCode::OK)
-                .content_type("application/json")
-                .body(serde_json::to_vec(&serde_json::json!({ "token": token })).unwrap_or_default()))
+            if state.auth.login_mode() == auth::LOGIN_MODE_OTP_QR {
+                let id = state.auth.start_qr_login(&body.email);
+                Ok(Response::builder()
+                    .status(poem::http::StatusCode::OK)
+                    .content_type("application/json")
+                    .body(serde_json::to_vec(&serde_json::json!({ "qr_required": true, "qr_id": id })).unwrap_or_default()))
+            } else {
+                let token = state.auth.create_session(&body.email);
+                Ok(Response::builder()
+                    .status(poem::http::StatusCode::OK)
+                    .content_type("application/json")
+                    .body(serde_json::to_vec(&serde_json::json!({ "token": token })).unwrap_or_default()))
+            }
         }
         Err(e) => Ok(Response::builder().status(poem::http::StatusCode::FORBIDDEN).body(e.message())),
     }
+}
+
+/// `GET /api/auth/login-mode` — 現在のログイン方式(未ログインでも
+/// 参照可、ログインフォーム側の表示分岐に使う)。
+#[handler]
+async fn get_login_mode(state: Data<&AppState>) -> Response {
+    Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&serde_json::json!({ "login_mode": state.auth.login_mode() })).unwrap_or_default())
+}
+
+#[derive(Deserialize)]
+struct SetLoginModeRequest {
+    login_mode: String,
+}
+
+/// `POST /api/auth/login-mode` — ログイン方式を切り替える(管理者
+/// セッション必須——最初の1回は既定の`"otp"`でログインしてから切り替える)。
+/// RS-ECは複数アカウント制のため`"qr"`(QR単体、no-OTP)・`"none"`
+/// (パスワード無し)は受け付けない(`auth.rs`モジュールdoc参照)。
+#[handler]
+async fn set_login_mode(req: &Request, state: Data<&AppState>, body: poem::web::Json<SetLoginModeRequest>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    if !auth::is_valid_login_mode(&body.login_mode) {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("invalid login_mode (must be otp or otp_qr)"));
+    }
+    state.auth.set_login_mode(&body.login_mode);
+    Ok(Response::builder().status(poem::http::StatusCode::OK).body("ok"))
+}
+
+/// `GET /api/auth/qr-login/whoami?id=` — QR確認ページが「どのアカウント
+/// のログインを確認しようとしているか」を表示するための、マスク済み
+/// メールアドレス。
+#[handler]
+async fn qr_login_whoami(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
+    let id = query_param(req, "id").unwrap_or_default();
+    match state.auth.qr_login_masked_email(&id) {
+        Some(masked_email) => Ok(Response::builder()
+            .status(poem::http::StatusCode::OK)
+            .content_type("application/json")
+            .body(serde_json::to_vec(&serde_json::json!({ "masked_email": masked_email })).unwrap_or_default())),
+        None => Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("invalid or expired id")),
+    }
+}
+
+#[derive(Deserialize)]
+struct QrLoginIdRequest {
+    id: String,
+}
+
+/// `POST /api/auth/qr-login/confirm` — `qr-confirm.html`が読み込み時に
+/// 自動的に呼ぶ(ボタン操作不要)。このQRセッションを確認済みにする。
+#[handler]
+async fn qr_login_confirm(state: Data<&AppState>, body: poem::web::Json<QrLoginIdRequest>) -> PoemResult<Response> {
+    match state.auth.confirm_qr_login(&body.id) {
+        Ok(()) => Ok(Response::builder()
+            .status(poem::http::StatusCode::OK)
+            .content_type("application/json")
+            .body(serde_json::to_vec(&serde_json::json!({ "ok": true })).unwrap_or_default())),
+        Err(e) => Ok(Response::builder()
+            .status(poem::http::StatusCode::FORBIDDEN)
+            .content_type("application/json")
+            .body(serde_json::to_vec(&serde_json::json!({ "ok": false, "error": e.message() })).unwrap_or_default())),
+    }
+}
+
+/// `GET /api/auth/qr-login/status?id=` — プライマリ端末が数秒おきに
+/// ポーリングして、確認済みになったかを見る。
+#[handler]
+async fn qr_login_status(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
+    let id = query_param(req, "id").unwrap_or_default();
+    match state.auth.qr_login_status(&id) {
+        Some(confirmed) => Ok(Response::builder()
+            .status(poem::http::StatusCode::OK)
+            .content_type("application/json")
+            .body(serde_json::to_vec(&serde_json::json!({ "confirmed": confirmed })).unwrap_or_default())),
+        None => Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("invalid or expired id")),
+    }
+}
+
+/// `POST /api/auth/qr-login/finish` — 確認済みであることを見たプライマリ
+/// 端末が呼ぶ。実際のセッショントークンをここで初めて発行する。
+#[handler]
+async fn qr_login_finish(state: Data<&AppState>, body: poem::web::Json<QrLoginIdRequest>) -> PoemResult<Response> {
+    match state.auth.finish_qr_login(&body.id) {
+        Ok(token) => Ok(Response::builder()
+            .status(poem::http::StatusCode::OK)
+            .content_type("application/json")
+            .body(serde_json::to_vec(&serde_json::json!({ "token": token })).unwrap_or_default())),
+        Err(e) => Ok(Response::builder().status(poem::http::StatusCode::FORBIDDEN).body(e.message())),
+    }
+}
+
+const QR_CONFIRM_HTML: &str = r#"<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Confirm Login / ログイン確認 - RS-EC</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #14181d;
+    color: #ffffff;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 24px;
+    box-sizing: border-box;
+  }
+  .card {
+    max-width: 420px;
+    width: 100%;
+    background: #1f262e;
+    border: 1px solid #38424d;
+    border-radius: 14px;
+    padding: 24px;
+    text-align: center;
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 12px; }
+  p { line-height: 1.6; margin: 8px 0; }
+  .who { font-weight: bold; font-size: 1.05rem; margin: 16px 0; word-break: break-all; }
+  button {
+    font-size: 1.05rem;
+    padding: 14px 20px;
+    border-radius: 10px;
+    border: none;
+    cursor: pointer;
+    width: 100%;
+    margin-top: 12px;
+  }
+  #confirm-btn { background: #6ad0c8; color: #0b201d; font-weight: bold; }
+  .status { margin-top: 16px; min-height: 1.4em; }
+  .status.ok { color: #6ad0c8; }
+  .status.err { color: #ff8080; }
+  .warn { font-size: 0.85rem; color: #c8d2da; margin-top: 20px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Confirming this login... / このログインを確認しています...</h1>
+    <p>Opening this page on your phone / tablet / webcam device automatically confirms the login
+       — no button press needed. / このページをスマホ・タブレット・WEBカメラ端末で開くだけで
+       自動的にログインが確認されます——ボタン操作は不要です。</p>
+    <div class="who" id="who">Loading... / 読み込み中...</div>
+    <button id="confirm-btn" class="hidden">✅ Retry confirm / 再確認する</button>
+    <div class="status" id="status"></div>
+    <p class="warn">
+      ⚠️ Only open this link if you personally requested this login just now. / 今まさにご自身がログイン操作を行った場合のみ、このリンクを開いてください。
+      This link expires in a few minutes and can be used only once. / このリンクは数分で失効し、1回のみ使用できます。
+    </p>
+  </div>
+<script>
+(function () {
+  "use strict";
+  var params = new URLSearchParams(location.search);
+  var id = params.get("id") || "";
+  var whoEl = document.getElementById("who");
+  var btn = document.getElementById("confirm-btn");
+  var statusEl = document.getElementById("status");
+
+  if (!id) {
+    whoEl.textContent = "Invalid link (missing id). / 無効なリンクです(idがありません)。";
+    return;
+  }
+
+  function doConfirm() {
+    btn.classList.add("hidden");
+    statusEl.className = "status";
+    statusEl.textContent = "Confirming... / 確認中...";
+    fetch("/api/auth/qr-login/confirm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: id }),
+    })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+      .then(function (res) {
+        if (res.ok && res.body && res.body.ok) {
+          statusEl.className = "status ok";
+          statusEl.textContent = "✅ Confirmed! You can close this page now. / 確認しました！このページは閉じて構いません。";
+        } else {
+          statusEl.className = "status err";
+          statusEl.textContent = "⚠ " + ((res.body && res.body.error) || "Failed to confirm. / 確認に失敗しました。");
+          btn.classList.remove("hidden");
+        }
+      })
+      .catch(function () {
+        statusEl.className = "status err";
+        statusEl.textContent = "⚠ Could not reach the server. / サーバーに接続できませんでした。";
+        btn.classList.remove("hidden");
+      });
+  }
+
+  fetch("/api/auth/qr-login/whoami?id=" + encodeURIComponent(id))
+    .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+    .then(function (res) {
+      if (res.ok && res.body && res.body.masked_email) {
+        whoEl.textContent = res.body.masked_email;
+        doConfirm();
+      } else {
+        whoEl.textContent = "This link is invalid or has expired. / このリンクは無効または期限切れです。";
+      }
+    })
+    .catch(function () {
+      whoEl.textContent = "Could not reach the server. / サーバーに接続できませんでした。";
+    });
+
+  btn.addEventListener("click", doConfirm);
+})();
+</script>
+</body>
+</html>
+"#;
+
+#[handler]
+async fn qr_confirm_page() -> Response {
+    Response::builder().status(poem::http::StatusCode::OK).content_type("text/html; charset=utf-8").body(QR_CONFIRM_HTML)
 }
 
 /// `POST /api/auth/logout` — セッショントークンを失効させる。
@@ -1087,6 +1334,12 @@ fn build_routes(state: AppState) -> impl poem::Endpoint {
         .at("/api/auth/request-otp", post(request_otp))
         .at("/api/auth/verify-otp", post(verify_otp))
         .at("/api/auth/logout", post(logout))
+        .at("/api/auth/login-mode", get(get_login_mode).post(set_login_mode))
+        .at("/api/auth/qr-login/whoami", get(qr_login_whoami))
+        .at("/api/auth/qr-login/confirm", post(qr_login_confirm))
+        .at("/api/auth/qr-login/status", get(qr_login_status))
+        .at("/api/auth/qr-login/finish", post(qr_login_finish))
+        .at("/qr-confirm.html", get(qr_confirm_page))
         .at("/api/accounts", get(list_accounts).post(add_account))
         .at("/api/accounts/request", post(request_access))
         .at("/api/accounts/requests", get(list_access_requests))
@@ -1164,6 +1417,112 @@ mod handler_tests {
 
     fn admin_token(state: &AppState) -> String {
         state.auth.create_session(ADMIN_EMAIL)
+    }
+
+    #[tokio::test]
+    async fn login_mode_defaults_to_otp_and_requires_admin_session_to_change() {
+        let state = make_state("login-mode", true).await;
+        let token = admin_token(&state);
+        let client = TestClient::new(build_routes(state));
+
+        let resp = client.get("/api/auth/login-mode").send().await;
+        resp.assert_status_is_ok();
+        let value: serde_json::Value = resp.json().await.value().deserialize();
+        assert_eq!(value["login_mode"], "otp");
+
+        // 未ログインでの変更は拒否される。
+        let resp = client.post("/api/auth/login-mode").body_json(&serde_json::json!({"login_mode": "otp_qr"})).send().await;
+        resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
+
+        // RS-ECは複数アカウント制のため"qr"(QR単体)・"none"(パスワード無し)は
+        // 受け付けない(auth.rsモジュールdoc参照)。
+        let resp = client
+            .post("/api/auth/login-mode")
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({"login_mode": "qr"}))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::BAD_REQUEST);
+
+        let resp = client
+            .post("/api/auth/login-mode")
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({"login_mode": "otp_qr"}))
+            .send()
+            .await;
+        resp.assert_status_is_ok();
+        let resp = client.get("/api/auth/login-mode").send().await;
+        let value: serde_json::Value = resp.json().await.value().deserialize();
+        assert_eq!(value["login_mode"], "otp_qr");
+    }
+
+    #[tokio::test]
+    async fn otp_qr_mode_requires_qr_confirmation_as_second_factor_over_real_http() {
+        let state = make_state("otp-qr-flow", true).await;
+        state.auth.set_login_mode(auth::LOGIN_MODE_OTP_QR);
+        let client = TestClient::new(build_routes(state.clone()));
+
+        let auth::RequestOtpOutcome::Issued(code) = state.auth.request_otp(ADMIN_EMAIL);
+        let resp = client.post("/api/auth/verify-otp").body_json(&serde_json::json!({"email": ADMIN_EMAIL, "code": code})).send().await;
+        resp.assert_status_is_ok();
+        let verified: serde_json::Value = resp.json().await.value().deserialize();
+        assert_eq!(verified["qr_required"], true);
+        let qr_id = verified["qr_id"].as_str().unwrap().to_string();
+
+        let resp = client.get(format!("/api/auth/qr-login/whoami?id={qr_id}")).send().await;
+        resp.assert_status_is_ok();
+        let who: serde_json::Value = resp.json().await.value().deserialize();
+        assert!(who["masked_email"].as_str().unwrap().contains("***"));
+
+        // 確認前にfinishしても拒否される(まだ確認済みではないため)。
+        let resp = client.post("/api/auth/qr-login/finish").body_json(&serde_json::json!({"id": qr_id})).send().await;
+        resp.assert_status(poem::http::StatusCode::FORBIDDEN);
+
+        // qr-confirm.html自身が読み込み時に自動で呼ぶ操作を模す。
+        let resp = client.post("/api/auth/qr-login/confirm").body_json(&serde_json::json!({"id": qr_id})).send().await;
+        resp.assert_status_is_ok();
+
+        let resp = client.get(format!("/api/auth/qr-login/status?id={qr_id}")).send().await;
+        let status: serde_json::Value = resp.json().await.value().deserialize();
+        assert_eq!(status["confirmed"], true);
+
+        let resp = client.post("/api/auth/qr-login/finish").body_json(&serde_json::json!({"id": qr_id})).send().await;
+        resp.assert_status_is_ok();
+        let finished: serde_json::Value = resp.json().await.value().deserialize();
+        let session_token = finished["token"].as_str().unwrap().to_string();
+
+        // 発行されたトークンで実際に保護APIへアクセスできる。
+        let resp = client.get("/api/accounts").header("Authorization", format!("Bearer {session_token}")).send().await;
+        resp.assert_status_is_ok();
+
+        // QRセッションは使い捨てのため、二重finishは拒否される。
+        let resp = client.post("/api/auth/qr-login/finish").body_json(&serde_json::json!({"id": qr_id})).send().await;
+        resp.assert_status(poem::http::StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn otp_mode_verify_otp_still_issues_a_session_directly() {
+        // login_modeが既定の"otp"のままなら、従来通りverify-otpが即座に
+        // セッショントークンを発行する(otp_qrへの回帰防止)。
+        let state = make_state("otp-mode-unchanged", true).await;
+        let client = TestClient::new(build_routes(state.clone()));
+        let auth::RequestOtpOutcome::Issued(code) = state.auth.request_otp(ADMIN_EMAIL);
+        let resp = client.post("/api/auth/verify-otp").body_json(&serde_json::json!({"email": ADMIN_EMAIL, "code": code})).send().await;
+        resp.assert_status_is_ok();
+        let verified: serde_json::Value = resp.json().await.value().deserialize();
+        assert!(verified.get("qr_required").is_none());
+        assert!(verified["token"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn qr_confirm_page_is_served_and_mentions_rs_ec() {
+        let state = make_state("qr-confirm-page", true).await;
+        let client = TestClient::new(build_routes(state));
+        let resp = client.get("/qr-confirm.html").send().await;
+        resp.assert_status_is_ok();
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains("RS-EC"));
+        assert!(body.contains("qr-login/confirm"));
     }
 
     #[tokio::test]
