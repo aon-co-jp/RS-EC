@@ -3,7 +3,10 @@
 作業ドライブは`F:\runo`。この節は[`open-raid-z`](https://github.com/aon-co-jp/open-raid-z)の
 `CLAUDE.md`を正本とし、各プロジェクトへコピーして同期する方針に準じる。
 GitHubリポジトリ: [aon-co-jp/RS-EC](https://github.com/aon-co-jp/RS-EC)。
-VPS上の作業パス: `/root/RS-EC`(空フォルダ作成済み、2026-07-21)。
+VPS上の作業パス: `/root/repository/RS-EC`(2026-08-28、VPSディレクトリ
+構成整理によりリポジトリは`/root/repository/`配下へ移動。旧パス
+`/root/RS-EC`はシンボリックリンクとして残しており、systemdサービス等
+既存の参照はそのまま機能する)。
 
 ## このプロジェクトの役割
 
