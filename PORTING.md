@@ -132,3 +132,19 @@
 - **WASM по-прежнему остаётся технологией для интерфейса.** Изменилось лишь то, что вызываемый им API теперь построен на Connect.
 - Интерфейсы, форма которых задана внешним стандартом (ACME, обратные вызовы OAuth, вебхуки сторонних сервисов, проверки работоспособности, статические файлы, OTLP), остаются обычным HTTP.
 - **Если есть сомнения — выбирайте Connect.**
+
+## REST 全廃・Connect 移行 (2026-11-06〜07)
+
+**状況**: 自前の API の操作 36 個(旧ルート 28 本)をすべて Connect に移し、旧 REST(`/api/...`)の経路は**削除した**(旧パスは 404)。ユーザー決定(2026-11-04)の「REST 全廃・gRPC / Connect へ」に従う。方針の正本は `aon-co-jp/runo` の `API-POLICY.md`。
+
+- **呼び方**: `POST /rs_ec.v1.<Service>/<Method>`、`content-type: application/json`、本文は JSON オブジェクト。認証は従来どおり `Authorization: Bearer <セッション>`。
+  パス引数・クエリだった値は、JSON の欄に入れる(例: `POST /rs_ec.v1.Products/Get ほか` に `{"id": 3}`)。
+- **サービス**: Auth(RequestOtp, VerifyOtp, Logout, GetLoginMode, SetLoginMode, QrLogin*)・Accounts・Products・Categories・Favorites・Reviews・Cart・Orders
+- **読み込みは RS-JSON**(`rust_json::from_str_secure`: 本文 64 KiB・深さ16・重複キー拒否)、書き出しは `rust_json::fast`。
+- **エラー**: `{"code": "...", "message": "..."}`(HTTP: 400 不正入力・重複キー / 401 未認証 / 403 / 404 / 415 / 503 など)。成功は常に 200(文字列だけの応答は `{"message": "..."}`)。
+- **実装**: `src/connect.rs` が入口。JSON の欄を内部ルーター(公開されない)のパス引数・クエリ・本文へ変換して既存ハンドラを呼ぶ。`build_routes` の `rpc_table!` が唯一の表。
+- **残したもの(例外)**: `GET /`(案内ページ)・`GET /healthz`(ヘルスチェック)・`GET /qr-confirm.html`(QR 確認ページ、画面)。
+- **試験**: `cargo test` 48 件が通る(旧 REST が 404、認証なし 401、不正 JSON・重複キー・非オブジェクト 400、JSON 以外の content-type 415、パス引数欠落 400、GET 405 を含む)。
+- **呼び出し元**: 同リポジトリの画面(`/` の案内、`/qr-confirm.html` の JS)は Connect に更新済み。他リポジトリからの呼び出しは確認できなかった(文書内の言及のみ)。
+- **注意**: 旧 REST をそのまま叩いている外部のスクリプトがあれば壊れる(互換は残していない)。
+- **本番**: `rs-ec.service`(ポート 8102)への反映状況は下の PORTING.md を参照。

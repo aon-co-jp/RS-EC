@@ -74,7 +74,7 @@ pub async fn send_otp(config: SmtpConfig, to: String, code: String) -> Result<()
         .map_err(|e| MailError::Send(format!("task panicked: {e}")))?
 }
 
-/// 誰かが`POST /api/accounts/request`でアクセス許可を申請したことを
+/// 誰かが`POST /rs_ec.v1.Accounts/RequestAccess`でアクセス許可を申請したことを
 /// 管理者へ通知する。
 pub async fn send_access_request_notice(
     config: SmtpConfig,
@@ -87,8 +87,8 @@ pub async fn send_access_request_notice(
         "RS-ECへのアクセス許可申請が届きました。\n\n\
          申請者メール: {request_email}\n\
          メッセージ: {message_line}\n\n\
-         管理者としてログインし、GET /api/accounts/requests で申請一覧を確認、\n\
-         POST /api/accounts/requests/:id/decide で閲覧/編集を個別に選んで\n\
+         管理者としてログインし、POST /rs_ec.v1.Accounts/ListRequests で申請一覧を確認、\n\
+         POST /rs_ec.v1.Accounts/Decide で閲覧/編集を個別に選んで\n\
          許可・不許可を決定してください。"
     );
     tokio::task::spawn_blocking(move || build_and_send(&config, &admin_email, "RS-EC アクセス許可申請", body))

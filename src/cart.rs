@@ -1,7 +1,7 @@
 //! ショッピングカート。ログイン済みアカウント(メールアドレス)ごとに
 //! 「商品ID→数量」を保持する。`favorites.rs`と同じJSONファイル永続化
 //! パターン。カート自体は金額計算・注文確定を持たず、それらは
-//! `order.rs`の`POST /api/orders/checkout`が担う(正直な開示: カートは
+//! `order.rs`の`POST /rs_ec.v1.Orders/Checkout`が担う(正直な開示: カートは
 //! あくまで「確定前の一時的な選択リスト」)。
 
 use std::collections::HashMap;

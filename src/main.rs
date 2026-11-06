@@ -11,7 +11,7 @@
 //! を実装している。**
 //! EC-CUBEが持つ以下の機能は**まだ一切無い**:
 //!
-//! - **実決済ゲートウェイ連携(Stripe等)は未実装**。`POST /api/orders/checkout`
+//! - **実決済ゲートウェイ連携(Stripe等)は未実装**。`POST /rs_ec.v1.Orders/Checkout`
 //!   はカートを注文に確定するが、決済処理は`order::process_mock_payment`
 //!   という常に成功するダミー関数(金額0円のときのみ失敗)で、実際の
 //!   金銭のやり取り・カード情報の送受信は一切行わない(正直な開示)。
@@ -34,6 +34,7 @@
 mod access;
 mod accounts;
 mod auth;
+mod connect;
 mod cart;
 mod categories;
 mod favorites;
@@ -47,7 +48,7 @@ use std::sync::Arc;
 use poem::listener::TcpListener;
 use poem::middleware::Tracing;
 use poem::web::Data;
-use poem::{delete, get, handler, post, web::Path as PathExtractor, EndpointExt, Request, Response, Result as PoemResult, Route, Server};
+use poem::{get, handler, post, web::Path as PathExtractor, EndpointExt, Request, Response, Result as PoemResult, Route, Server};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
@@ -176,7 +177,7 @@ fn default_status() -> ProductStatus {
     ProductStatus::Draft
 }
 
-/// `POST /api/products` — 商品を新規作成する。カタログへの`Need::Edit`
+/// `POST /rs_ec.v1.Products/Create` — 商品を新規作成する。カタログへの`Need::Edit`
 /// 権限が必要(管理者は常に許可、`access.rs`参照)。決済・在庫の自動
 /// 引き落としロジックは無し(v0.1.0の範囲外)。
 #[handler]
@@ -210,7 +211,7 @@ async fn create_product(req: &Request, state: Data<&AppState>, body: poem::web::
         .body(serde_json::to_vec(&product).unwrap_or_default()))
 }
 
-/// `GET /api/products` — 商品一覧。カタログへの`Need::View`権限がある
+/// `POST /rs_ec.v1.Products/List` — 商品一覧。カタログへの`Need::View`権限がある
 /// 場合のみ結果を返す(管理者は常に許可、未ログインはカタログが
 /// `Mode::Public`かつ`allow_view`なら閲覧可、`RGit`と同じprivate既定)。
 #[handler]
@@ -252,7 +253,7 @@ struct UpdateProductRequest {
     categories: Option<Vec<u64>>,
 }
 
-/// `PUT /api/products/:id` — 商品の各フィールドを更新する(カタログへの
+/// `POST /rs_ec.v1.Products/Update` — 商品の各フィールドを更新する(カタログへの
 /// `Need::Edit`権限が必要、指定したフィールドのみ更新)。
 #[handler]
 async fn update_product(
@@ -292,7 +293,7 @@ async fn update_product(
     Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&updated).unwrap_or_default()))
 }
 
-/// `DELETE /api/products/:id` — 商品を削除する(カタログへの`Need::Edit`
+/// `POST /rs_ec.v1.Products/Delete` — 商品を削除する(カタログへの`Need::Edit`
 /// 権限が必要)。
 #[handler]
 async fn delete_product(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
@@ -315,7 +316,7 @@ struct CreateCategoryRequest {
     slug: String,
 }
 
-/// `POST /api/categories` — カテゴリを新規作成する(管理者のみ)。
+/// `POST /rs_ec.v1.Categories/Create` — カテゴリを新規作成する(管理者のみ)。
 #[handler]
 async fn create_category(req: &Request, state: Data<&AppState>, body: poem::web::Json<CreateCategoryRequest>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
@@ -336,7 +337,7 @@ async fn create_category(req: &Request, state: Data<&AppState>, body: poem::web:
         .body(serde_json::to_vec(&category).unwrap_or_default()))
 }
 
-/// `GET /api/categories` — カテゴリ一覧(誰でも閲覧可、商品カタログとは
+/// `POST /rs_ec.v1.Categories/List` — カテゴリ一覧(誰でも閲覧可、商品カタログとは
 /// 異なりアクセス制御の対象外——EC-CUBEのカテゴリツリーは通常公開情報)。
 #[handler]
 async fn list_categories(state: Data<&AppState>) -> PoemResult<Response> {
@@ -347,7 +348,7 @@ async fn list_categories(state: Data<&AppState>) -> PoemResult<Response> {
         .body(serde_json::to_vec(&store.categories).unwrap_or_default()))
 }
 
-/// `DELETE /api/categories/:id` — カテゴリを削除する(管理者のみ)。
+/// `POST /rs_ec.v1.Categories/Delete` — カテゴリを削除する(管理者のみ)。
 /// 削除してもそのカテゴリを参照している`Product::categories`のIDは
 /// そのまま残る(外部キー制約が無いことの直接の帰結、正直な開示)。
 #[handler]
@@ -370,7 +371,7 @@ struct AddFavoriteRequest {
     product_id: u64,
 }
 
-/// `POST /api/favorites` — ログイン中アカウントのお気に入りに商品を
+/// `POST /rs_ec.v1.Favorites/Add` — ログイン中アカウントのお気に入りに商品を
 /// 1件追加する。**カートへの追加ではない**: 数量・合計金額・注文は
 /// 一切扱わない、保存した商品IDの集合のみ(`favorites.rs`参照)。
 #[handler]
@@ -390,7 +391,7 @@ async fn add_favorite(req: &Request, state: Data<&AppState>, body: poem::web::Js
     Ok(Response::builder().status(poem::http::StatusCode::CREATED).body("added"))
 }
 
-/// `GET /api/favorites` — ログイン中アカウント自身のお気に入り商品一覧
+/// `POST /rs_ec.v1.Favorites/List` — ログイン中アカウント自身のお気に入り商品一覧
 /// (他アカウントの一覧は見えない)。
 #[handler]
 async fn list_favorites(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
@@ -407,7 +408,7 @@ async fn list_favorites(req: &Request, state: Data<&AppState>) -> PoemResult<Res
         .body(serde_json::to_vec(&favorited).unwrap_or_default()))
 }
 
-/// `DELETE /api/favorites/:product_id` — ログイン中アカウントのお気に
+/// `POST /rs_ec.v1.Favorites/Remove` — ログイン中アカウントのお気に
 /// 入りから1件削除する。
 #[handler]
 async fn remove_favorite(req: &Request, PathExtractor(product_id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
@@ -432,7 +433,7 @@ struct CreateReviewRequest {
     body: String,
 }
 
-/// `POST /api/products/:id/reviews` — ログイン中(登録アカウントまたは
+/// `POST /rs_ec.v1.Reviews/Create` — ログイン中(登録アカウントまたは
 /// 管理者)のみ投稿可能。`rating`は1〜5のみ許可(それ以外は`400`)。
 /// 投稿直後は`approved: false`(`RS-Blog`のコメント承認制と同じ、
 /// 管理者承認まで一般公開の一覧・平均評価には出ない)。
@@ -476,7 +477,7 @@ async fn create_review(
         .body(serde_json::to_vec(&review).unwrap_or_default()))
 }
 
-/// `GET /api/products/:id/reviews` — `?approved_only=true`なら誰でも
+/// `POST /rs_ec.v1.Reviews/ListForProduct` — `?approved_only=true`なら誰でも
 /// 承認済みレビューのみ閲覧可(公開)。それ以外(クエリ無し、または
 /// `approved_only=false`)は管理者のみ、未承認を含む全件を返す。
 #[handler]
@@ -509,7 +510,7 @@ struct RatingSummary {
     review_count: u32,
 }
 
-/// `GET /api/products/:id/rating-summary` — 公開。承認済みレビューのみ
+/// `POST /rs_ec.v1.Reviews/RatingSummary` — 公開。承認済みレビューのみ
 /// から平均評価・件数を計算する(未承認の1件が承認前に平均を歪めない
 /// ようにするため、タスク要件)。
 #[handler]
@@ -523,7 +524,7 @@ async fn rating_summary_handler(PathExtractor(product_id): PathExtractor<u64>, s
         .body(serde_json::to_vec(&RatingSummary { average_rating, review_count }).unwrap_or_default()))
 }
 
-/// `POST /api/reviews/:id/approve` — 管理者のみ、レビューを承認して
+/// `POST /rs_ec.v1.Reviews/Approve` — 管理者のみ、レビューを承認して
 /// 一般公開する。
 #[handler]
 async fn approve_review(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
@@ -540,7 +541,7 @@ async fn approve_review(req: &Request, PathExtractor(id): PathExtractor<u64>, st
     Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&updated).unwrap_or_default()))
 }
 
-/// `DELETE /api/reviews/:id` — 管理者、またはそのレビューの投稿者本人
+/// `POST /rs_ec.v1.Reviews/Delete` — 管理者、またはそのレビューの投稿者本人
 /// のみ削除可能。
 #[handler]
 async fn delete_review(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
@@ -600,7 +601,7 @@ async fn build_cart_view(state: &AppState, email: &str) -> CartView {
     CartView { items, total_cents }
 }
 
-/// `GET /api/cart` — ログイン中アカウント自身のカート内容(商品スナップ
+/// `POST /rs_ec.v1.Cart/Get` — ログイン中アカウント自身のカート内容(商品スナップ
 /// ショットと小計・合計)。カート自体は決済・注文作成を行わない。
 #[handler]
 async fn get_cart(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
@@ -622,7 +623,7 @@ fn default_cart_quantity() -> u64 {
     1
 }
 
-/// `POST /api/cart/items` — カートに商品を追加(既にあれば数量を加算)。
+/// `POST /rs_ec.v1.Cart/AddItem` — カートに商品を追加(既にあれば数量を加算)。
 /// `quantity`は1以上必須(それ以外は`400`)。商品の存在確認のみ行い、
 /// 在庫チェックは注文確定(`checkout`)時に行う(カート追加時点では
 /// 在庫を予約・引当しない、単純な実装であることの明記)。
@@ -648,7 +649,7 @@ async fn add_cart_item(req: &Request, state: Data<&AppState>, body: poem::web::J
     Ok(Response::builder().status(poem::http::StatusCode::CREATED).content_type("application/json").body(serde_json::to_vec(&view).unwrap_or_default()))
 }
 
-/// `DELETE /api/cart/items/:product_id` — カートから1商品を削除する。
+/// `POST /rs_ec.v1.Cart/RemoveItem` — カートから1商品を削除する。
 #[handler]
 async fn remove_cart_item(req: &Request, PathExtractor(product_id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
     let Some(email) = session_email(req, &state) else {
@@ -669,7 +670,7 @@ async fn remove_cart_item(req: &Request, PathExtractor(product_id): PathExtracto
     Ok(Response::builder().status(poem::http::StatusCode::OK).body("removed"))
 }
 
-/// `POST /api/orders/checkout` — ログイン中アカウントのカート内容を
+/// `POST /rs_ec.v1.Orders/Checkout` — ログイン中アカウントのカート内容を
 /// 注文として確定する。**実際の決済は一切行わず、`order::process_mock_payment`
 /// という常に成功するダミー関数で決済成功を模擬する**(正直な開示、
 /// `CLAUDE.md`参照)。カートが空、在庫不足の商品がある場合は`400`。
@@ -753,7 +754,7 @@ async fn checkout(req: &Request, state: Data<&AppState>) -> PoemResult<Response>
     Ok(Response::builder().status(response_status).content_type("application/json").body(serde_json::to_vec(&new_order).unwrap_or_default()))
 }
 
-/// `GET /api/orders` — ログイン中アカウント自身の注文一覧(管理者は
+/// `POST /rs_ec.v1.Orders/List` — ログイン中アカウント自身の注文一覧(管理者は
 /// 常に全アカウントの注文一覧が見える)。
 #[handler]
 async fn list_orders(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
@@ -769,7 +770,7 @@ async fn list_orders(req: &Request, state: Data<&AppState>) -> PoemResult<Respon
     Ok(Response::builder().status(poem::http::StatusCode::OK).content_type("application/json").body(serde_json::to_vec(&orders).unwrap_or_default()))
 }
 
-/// `GET /api/orders/:id` — 本人または管理者のみ閲覧可能。
+/// `POST /rs_ec.v1.Orders/Get` — 本人または管理者のみ閲覧可能。
 #[handler]
 async fn get_order(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
     let Some(email) = session_email(req, &state) else {
@@ -833,33 +834,33 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <table>
 <tr><th>メソッド / パス</th><th>説明</th></tr>
 <tr><td><code>GET /healthz</code></td><td>ヘルスチェック</td></tr>
-<tr><td><code>POST /api/auth/request-otp</code></td><td>ログイン用ワンタイムパスワードをメール送信(管理者+登録アカウント)</td></tr>
-<tr><td><code>POST /api/auth/verify-otp</code></td><td>OTPを検証してセッショントークンを発行</td></tr>
-<tr><td><code>POST /api/auth/logout</code></td><td>ログアウト(トークン失効)</td></tr>
-<tr><td><code>GET</code> / <code>POST /api/auth/login-mode</code></td><td>ログイン方式の取得(未ログイン可) / 変更(<code>otp</code>/<code>otp_qr</code>、管理者ログイン必須)</td></tr>
-<tr><td><code>GET /api/auth/qr-login/whoami?id=</code></td><td>QR確認ページ向け、マスク済みメールアドレス取得</td></tr>
-<tr><td><code>POST /api/auth/qr-login/confirm</code></td><td>QR確認ページが自動的に呼ぶ、確認済みにする</td></tr>
-<tr><td><code>GET /api/auth/qr-login/status?id=</code></td><td>プライマリ端末がポーリングして確認状況を見る</td></tr>
-<tr><td><code>POST /api/auth/qr-login/finish</code></td><td>確認済みならセッショントークンを発行(<code>otp_qr</code>モードの第二要素)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Auth/RequestOtp</code></td><td>ログイン用ワンタイムパスワードをメール送信(管理者+登録アカウント)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Auth/VerifyOtp</code></td><td>OTPを検証してセッショントークンを発行</td></tr>
+<tr><td><code>POST /rs_ec.v1.Auth/Logout</code></td><td>ログアウト(トークン失効)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Auth/GetLoginMode</code> / <code>POST /rs_ec.v1.Auth/SetLoginMode</code></td><td>ログイン方式の取得(未ログイン可) / 変更(<code>otp</code>/<code>otp_qr</code>、管理者ログイン必須)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Auth/QrLoginWhoami (id=)</code></td><td>QR確認ページ向け、マスク済みメールアドレス取得</td></tr>
+<tr><td><code>POST /rs_ec.v1.Auth/QrLoginConfirm</code></td><td>QR確認ページが自動的に呼ぶ、確認済みにする</td></tr>
+<tr><td><code>POST /rs_ec.v1.Auth/QrLoginStatus (id=)</code></td><td>プライマリ端末がポーリングして確認状況を見る</td></tr>
+<tr><td><code>POST /rs_ec.v1.Auth/QrLoginFinish</code></td><td>確認済みならセッショントークンを発行(<code>otp_qr</code>モードの第二要素)</td></tr>
 <tr><td><code>GET /qr-confirm.html</code></td><td>QR撮影用の確認ページ(スマホ/タブレット/WEBカメラで開く)</td></tr>
-<tr><td><code>GET /api/accounts</code> / <code>POST /api/accounts</code></td><td>登録済みメールアドレスの一覧・追加(管理者のみ)</td></tr>
-<tr><td><code>POST /api/accounts/request</code></td><td>アクセス許可の自己申請(認証不要)</td></tr>
-<tr><td><code>GET /api/accounts/requests</code></td><td>申請一覧(管理者のみ)</td></tr>
-<tr><td><code>POST /api/accounts/requests/:id/decide</code></td><td>申請の審査・承認/却下(管理者のみ)</td></tr>
-<tr><td><code>GET /api/products</code> / <code>POST /api/products</code></td><td>商品一覧取得(<code>?category=&lt;id&gt;</code>で絞り込み可) / 新規作成</td></tr>
-<tr><td><code>GET /api/products/:id</code></td><td>商品詳細取得</td></tr>
-<tr><td><code>PUT /api/products/:id</code></td><td>商品更新(在庫・ステータス・所属カテゴリ変更含む)</td></tr>
-<tr><td><code>DELETE /api/products/:id</code></td><td>商品削除</td></tr>
-<tr><td><code>GET /api/categories</code> / <code>POST /api/categories</code></td><td>カテゴリ一覧取得(公開) / 新規作成(管理者のみ)</td></tr>
-<tr><td><code>DELETE /api/categories/:id</code></td><td>カテゴリ削除(管理者のみ)</td></tr>
-<tr><td><code>GET /api/favorites</code> / <code>POST /api/favorites</code></td><td>自分のお気に入り商品一覧取得 / 追加(要ログイン、<strong>カートではない</strong>)</td></tr>
-<tr><td><code>DELETE /api/favorites/:product_id</code></td><td>お気に入りから削除(要ログイン)</td></tr>
-<tr><td><code>POST /api/products/:id/reviews</code></td><td>レビュー投稿(要ログイン、1〜5の評価必須、投稿直後は未承認)</td></tr>
-<tr><td><code>GET /api/products/:id/reviews?approved_only=true</code></td><td>承認済みレビュー一覧(公開)</td></tr>
-<tr><td><code>GET /api/products/:id/reviews</code></td><td>全レビュー一覧(未承認含む、管理者のみ)</td></tr>
-<tr><td><code>GET /api/products/:id/rating-summary</code></td><td>承認済みレビューのみで算出した平均評価・件数(公開)</td></tr>
-<tr><td><code>POST /api/reviews/:id/approve</code></td><td>レビューを承認して公開(管理者のみ)</td></tr>
-<tr><td><code>DELETE /api/reviews/:id</code></td><td>レビュー削除(管理者、または投稿者本人)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Accounts/List</code> / <code>POST /rs_ec.v1.Accounts/Add</code></td><td>登録済みメールアドレスの一覧・追加(管理者のみ)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Accounts/RequestAccess</code></td><td>アクセス許可の自己申請(認証不要)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Accounts/ListRequests</code></td><td>申請一覧(管理者のみ)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Accounts/Decide</code></td><td>申請の審査・承認/却下(管理者のみ)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Products/List</code> / <code>POST /rs_ec.v1.Products/Create</code></td><td>商品一覧取得(<code>?category=&lt;id&gt;</code>で絞り込み可) / 新規作成</td></tr>
+<tr><td><code>POST /rs_ec.v1.Products/Get</code></td><td>商品詳細取得</td></tr>
+<tr><td><code>POST /rs_ec.v1.Products/Update</code></td><td>商品更新(在庫・ステータス・所属カテゴリ変更含む)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Products/Delete</code></td><td>商品削除</td></tr>
+<tr><td><code>POST /rs_ec.v1.Categories/List</code> / <code>POST /rs_ec.v1.Categories/Create</code></td><td>カテゴリ一覧取得(公開) / 新規作成(管理者のみ)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Categories/Delete</code></td><td>カテゴリ削除(管理者のみ)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Favorites/List</code> / <code>POST /rs_ec.v1.Favorites/Add</code></td><td>自分のお気に入り商品一覧取得 / 追加(要ログイン、<strong>カートではない</strong>)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Favorites/Remove</code></td><td>お気に入りから削除(要ログイン)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Reviews/Create</code></td><td>レビュー投稿(要ログイン、1〜5の評価必須、投稿直後は未承認)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Reviews/ListForProduct (approved_only=true)</code></td><td>承認済みレビュー一覧(公開)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Reviews/ListForProduct</code></td><td>全レビュー一覧(未承認含む、管理者のみ)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Reviews/RatingSummary</code></td><td>承認済みレビューのみで算出した平均評価・件数(公開)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Reviews/Approve</code></td><td>レビューを承認して公開(管理者のみ)</td></tr>
+<tr><td><code>POST /rs_ec.v1.Reviews/Delete</code></td><td>レビュー削除(管理者、または投稿者本人)</td></tr>
 </table>
 
 <div class="warn">
@@ -926,7 +927,7 @@ struct VerifyOtpRequest {
     code: String,
 }
 
-/// `POST /api/auth/verify-otp` — `login_mode`が`"otp_qr"`の場合は
+/// `POST /rs_ec.v1.Auth/VerifyOtp` — `login_mode`が`"otp_qr"`の場合は
 /// OTP成功後にセッションを即発行せず、QR確認(第二要素)セッションを
 /// 開始して`{"qr_required": true, "qr_id": ...}`を返す(真の2FA)。
 /// それ以外(既定の`"otp"`)は従来通りセッショントークンを即発行する。
@@ -952,7 +953,7 @@ async fn verify_otp(state: Data<&AppState>, body: poem::web::Json<VerifyOtpReque
     }
 }
 
-/// `GET /api/auth/login-mode` — 現在のログイン方式(未ログインでも
+/// `POST /rs_ec.v1.Auth/GetLoginMode` — 現在のログイン方式(未ログインでも
 /// 参照可、ログインフォーム側の表示分岐に使う)。
 #[handler]
 async fn get_login_mode(state: Data<&AppState>) -> Response {
@@ -967,7 +968,7 @@ struct SetLoginModeRequest {
     login_mode: String,
 }
 
-/// `POST /api/auth/login-mode` — ログイン方式を切り替える(管理者
+/// `POST /rs_ec.v1.Auth/SetLoginMode` — ログイン方式を切り替える(管理者
 /// セッション必須——最初の1回は既定の`"otp"`でログインしてから切り替える)。
 /// RS-ECは複数アカウント制のため`"qr"`(QR単体、no-OTP)・`"none"`
 /// (パスワード無し)は受け付けない(`auth.rs`モジュールdoc参照)。
@@ -981,7 +982,7 @@ async fn set_login_mode(req: &Request, state: Data<&AppState>, body: poem::web::
     Ok(Response::builder().status(poem::http::StatusCode::OK).body("ok"))
 }
 
-/// `GET /api/auth/qr-login/whoami?id=` — QR確認ページが「どのアカウント
+/// `POST /rs_ec.v1.Auth/QrLoginWhoami (id=)` — QR確認ページが「どのアカウント
 /// のログインを確認しようとしているか」を表示するための、マスク済み
 /// メールアドレス。
 #[handler]
@@ -1001,7 +1002,7 @@ struct QrLoginIdRequest {
     id: String,
 }
 
-/// `POST /api/auth/qr-login/confirm` — `qr-confirm.html`が読み込み時に
+/// `POST /rs_ec.v1.Auth/QrLoginConfirm` — `qr-confirm.html`が読み込み時に
 /// 自動的に呼ぶ(ボタン操作不要)。このQRセッションを確認済みにする。
 #[handler]
 async fn qr_login_confirm(state: Data<&AppState>, body: poem::web::Json<QrLoginIdRequest>) -> PoemResult<Response> {
@@ -1017,7 +1018,7 @@ async fn qr_login_confirm(state: Data<&AppState>, body: poem::web::Json<QrLoginI
     }
 }
 
-/// `GET /api/auth/qr-login/status?id=` — プライマリ端末が数秒おきに
+/// `POST /rs_ec.v1.Auth/QrLoginStatus (id=)` — プライマリ端末が数秒おきに
 /// ポーリングして、確認済みになったかを見る。
 #[handler]
 async fn qr_login_status(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
@@ -1031,7 +1032,7 @@ async fn qr_login_status(req: &Request, state: Data<&AppState>) -> PoemResult<Re
     }
 }
 
-/// `POST /api/auth/qr-login/finish` — 確認済みであることを見たプライマリ
+/// `POST /rs_ec.v1.Auth/QrLoginFinish` — 確認済みであることを見たプライマリ
 /// 端末が呼ぶ。実際のセッショントークンをここで初めて発行する。
 #[handler]
 async fn qr_login_finish(state: Data<&AppState>, body: poem::web::Json<QrLoginIdRequest>) -> PoemResult<Response> {
@@ -1125,7 +1126,7 @@ const QR_CONFIRM_HTML: &str = r#"<!doctype html>
     btn.classList.add("hidden");
     statusEl.className = "status";
     statusEl.textContent = "Confirming... / 確認中...";
-    fetch("/api/auth/qr-login/confirm", {
+    fetch("/rs_ec.v1.Auth/QrLoginConfirm", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ id: id }),
@@ -1137,7 +1138,7 @@ const QR_CONFIRM_HTML: &str = r#"<!doctype html>
           statusEl.textContent = "✅ Confirmed! You can close this page now. / 確認しました！このページは閉じて構いません。";
         } else {
           statusEl.className = "status err";
-          statusEl.textContent = "⚠ " + ((res.body && res.body.error) || "Failed to confirm. / 確認に失敗しました。");
+          statusEl.textContent = "⚠ " + ((res.body && (res.body.message || res.body.error)) || "Failed to confirm. / 確認に失敗しました。");
           btn.classList.remove("hidden");
         }
       })
@@ -1148,7 +1149,7 @@ const QR_CONFIRM_HTML: &str = r#"<!doctype html>
       });
   }
 
-  fetch("/api/auth/qr-login/whoami?id=" + encodeURIComponent(id))
+  fetch("/rs_ec.v1.Auth/QrLoginWhoami", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: id }) })
     .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
     .then(function (res) {
       if (res.ok && res.body && res.body.masked_email) {
@@ -1174,7 +1175,7 @@ async fn qr_confirm_page() -> Response {
     Response::builder().status(poem::http::StatusCode::OK).content_type("text/html; charset=utf-8").body(QR_CONFIRM_HTML)
 }
 
-/// `POST /api/auth/logout` — セッショントークンを失効させる。
+/// `POST /rs_ec.v1.Auth/Logout` — セッショントークンを失効させる。
 #[handler]
 async fn logout(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     let header = req.header(poem::http::header::AUTHORIZATION).unwrap_or("");
@@ -1189,7 +1190,7 @@ struct AddAccountRequest {
     email: String,
 }
 
-/// `POST /api/accounts` — ログイン可能なメールアドレスを1件登録する
+/// `POST /rs_ec.v1.Accounts/Add` — ログイン可能なメールアドレスを1件登録する
 /// (管理者のみ)。`accounts_locked`中は管理者メール以外を拒否する。
 #[handler]
 async fn add_account(req: &Request, state: Data<&AppState>, body: poem::web::Json<AddAccountRequest>) -> PoemResult<Response> {
@@ -1211,7 +1212,7 @@ async fn add_account(req: &Request, state: Data<&AppState>, body: poem::web::Jso
     Ok(Response::builder().status(poem::http::StatusCode::CREATED).body("ok"))
 }
 
-/// `GET /api/accounts` — 登録済みメールアドレス一覧(管理者のみ)。
+/// `POST /rs_ec.v1.Accounts/List` — 登録済みメールアドレス一覧(管理者のみ)。
 #[handler]
 async fn list_accounts(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
@@ -1228,7 +1229,7 @@ struct AccessRequestPayload {
     message: Option<String>,
 }
 
-/// `POST /api/accounts/request` — **認証不要、誰でも申請可能**。
+/// `POST /rs_ec.v1.Accounts/RequestAccess` — **認証不要、誰でも申請可能**。
 /// ログイン許可を求める申請を保留リストへ追加する
 /// (管理者が[`decide_access_request`]で許可するまでは無効)。
 #[handler]
@@ -1251,7 +1252,7 @@ async fn request_access(state: Data<&AppState>, body: poem::web::Json<AccessRequ
     Ok(Response::builder().status(poem::http::StatusCode::CREATED).body("request submitted"))
 }
 
-/// `GET /api/accounts/requests` — 保留中の申請一覧(管理者のみ)。
+/// `POST /rs_ec.v1.Accounts/ListRequests` — 保留中の申請一覧(管理者のみ)。
 #[handler]
 async fn list_access_requests(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
@@ -1271,7 +1272,7 @@ struct DecideAccessRequestPayload {
     allow_edit: bool,
 }
 
-/// `POST /api/accounts/requests/:id/decide` — 申請を審査する(管理者のみ)。
+/// `POST /rs_ec.v1.Accounts/Decide` — 申請を審査する(管理者のみ)。
 /// 承認時、カタログ全体の`access::AccessConfig::accounts`に閲覧/編集
 /// 許可を書き込む。`accounts_locked`中は管理者メール以外の承認を
 /// 拒否する(`RGit`/`RS-Chiketto`の`*_ACCOUNTS_LOCKED`と同じ方針)。
@@ -1325,43 +1326,69 @@ fn env_data_dir() -> PathBuf {
     std::env::var("RSEC_DATA_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("./data"))
 }
 
-/// ルーティング定義を`main()`とテスト(`poem::test::TestClient`)の両方から
-/// 再利用できるように切り出したもの。
+macro_rules! rpc_table {
+    ($( ($svc:literal, $m:literal, $inner:literal, $q:literal, $h:expr) ),* $(,)?) => {{
+        let inner = Route::new() $( .at($inner, post($h)) )*;
+        let defs: Vec<connect::Def> = vec![$( connect::Def { service: $svc, method: $m, inner: $inner, query: $q } ),*];
+        (inner, defs)
+    }};
+}
+
+/// Connect のパッケージ名(`POST /rs_ec.v1.<Service>/<Method>`)。
+pub const PACKAGE: &str = "rs_ec.v1";
+
+/// ルーティング定義を`main()`とテストの両方から再利用できるように切り出したもの。
+/// 公開するのは `/`・`/healthz`・`/qr-confirm.html`(規格どおりの GET)と Connect の `POST /rs_ec.v1.<Service>/<Method>` だけ。
+/// 旧 REST(`/api/...`)の経路は無い。
 fn build_routes(state: AppState) -> impl poem::Endpoint {
-    Route::new()
+    let (inner, defs) = rpc_table![
+        ("Auth", "RequestOtp", "/Auth/RequestOtp", false, request_otp),
+        ("Auth", "VerifyOtp", "/Auth/VerifyOtp", false, verify_otp),
+        ("Auth", "Logout", "/Auth/Logout", false, logout),
+        ("Auth", "GetLoginMode", "/Auth/GetLoginMode", true, get_login_mode),
+        ("Auth", "SetLoginMode", "/Auth/SetLoginMode", false, set_login_mode),
+        ("Auth", "QrLoginWhoami", "/Auth/QrLoginWhoami", true, qr_login_whoami),
+        ("Auth", "QrLoginConfirm", "/Auth/QrLoginConfirm", false, qr_login_confirm),
+        ("Auth", "QrLoginStatus", "/Auth/QrLoginStatus", true, qr_login_status),
+        ("Auth", "QrLoginFinish", "/Auth/QrLoginFinish", false, qr_login_finish),
+        ("Accounts", "List", "/Accounts/List", true, list_accounts),
+        ("Accounts", "Add", "/Accounts/Add", false, add_account),
+        ("Accounts", "RequestAccess", "/Accounts/RequestAccess", false, request_access),
+        ("Accounts", "ListRequests", "/Accounts/ListRequests", true, list_access_requests),
+        ("Accounts", "Decide", "/Accounts/Decide/:id", false, decide_access_request),
+        ("Products", "List", "/Products/List", true, list_products),
+        ("Products", "Create", "/Products/Create", false, create_product),
+        ("Products", "Get", "/Products/Get/:id", true, get_product),
+        ("Products", "Update", "/Products/Update/:id", false, update_product),
+        ("Products", "Delete", "/Products/Delete/:id", false, delete_product),
+        ("Categories", "List", "/Categories/List", true, list_categories),
+        ("Categories", "Create", "/Categories/Create", false, create_category),
+        ("Categories", "Delete", "/Categories/Delete/:id", false, delete_category),
+        ("Favorites", "List", "/Favorites/List", true, list_favorites),
+        ("Favorites", "Add", "/Favorites/Add", false, add_favorite),
+        ("Favorites", "Remove", "/Favorites/Remove/:product_id", false, remove_favorite),
+        ("Reviews", "ListForProduct", "/Reviews/ListForProduct/:id", true, list_reviews),
+        ("Reviews", "Create", "/Reviews/Create/:id", false, create_review),
+        ("Reviews", "RatingSummary", "/Reviews/RatingSummary/:id", true, rating_summary_handler),
+        ("Reviews", "Approve", "/Reviews/Approve/:id", false, approve_review),
+        ("Reviews", "Delete", "/Reviews/Delete/:id", false, delete_review),
+        ("Cart", "Get", "/Cart/Get", true, get_cart),
+        ("Cart", "AddItem", "/Cart/AddItem", false, add_cart_item),
+        ("Cart", "RemoveItem", "/Cart/RemoveItem/:product_id", false, remove_cart_item),
+        ("Orders", "Checkout", "/Orders/Checkout", false, checkout),
+        ("Orders", "List", "/Orders/List", true, list_orders),
+        ("Orders", "Get", "/Orders/Get/:id", true, get_order),
+    ];
+    let inner: Arc<poem::endpoint::BoxEndpoint<'static, Response>> = Arc::new(inner.data(state).boxed());
+    let mut app = Route::new()
         .at("/", get(index))
         .at("/healthz", get(healthz))
-        .at("/api/auth/request-otp", post(request_otp))
-        .at("/api/auth/verify-otp", post(verify_otp))
-        .at("/api/auth/logout", post(logout))
-        .at("/api/auth/login-mode", get(get_login_mode).post(set_login_mode))
-        .at("/api/auth/qr-login/whoami", get(qr_login_whoami))
-        .at("/api/auth/qr-login/confirm", post(qr_login_confirm))
-        .at("/api/auth/qr-login/status", get(qr_login_status))
-        .at("/api/auth/qr-login/finish", post(qr_login_finish))
-        .at("/qr-confirm.html", get(qr_confirm_page))
-        .at("/api/accounts", get(list_accounts).post(add_account))
-        .at("/api/accounts/request", post(request_access))
-        .at("/api/accounts/requests", get(list_access_requests))
-        .at("/api/accounts/requests/:id/decide", post(decide_access_request))
-        .at("/api/products", get(list_products).post(create_product))
-        .at("/api/products/:id", get(get_product).put(update_product).delete(delete_product))
-        .at("/api/categories", get(list_categories).post(create_category))
-        .at("/api/categories/:id", delete(delete_category))
-        .at("/api/favorites", get(list_favorites).post(add_favorite))
-        .at("/api/favorites/:product_id", delete(remove_favorite))
-        .at("/api/products/:id/reviews", get(list_reviews).post(create_review))
-        .at("/api/products/:id/rating-summary", get(rating_summary_handler))
-        .at("/api/reviews/:id/approve", post(approve_review))
-        .at("/api/reviews/:id", delete(delete_review))
-        .at("/api/cart", get(get_cart))
-        .at("/api/cart/items", post(add_cart_item))
-        .at("/api/cart/items/:product_id", delete(remove_cart_item))
-        .at("/api/orders/checkout", post(checkout))
-        .at("/api/orders", get(list_orders))
-        .at("/api/orders/:id", get(get_order))
-        .data(state)
-        .with(Tracing)
+        .at("/qr-confirm.html", get(qr_confirm_page));
+    for d in defs {
+        let call = connect::Call { inner: inner.clone(), def: d, package: PACKAGE };
+        app = app.at(format!("/{}.{}/{}", PACKAGE, d.service, d.method), post(call));
+    }
+    app.with(Tracing)
 }
 
 #[tokio::main]
@@ -1375,7 +1402,7 @@ async fn main() -> anyhow::Result<()> {
     let admin_email = std::env::var("RSEC_ADMIN_EMAIL").unwrap_or_else(|_| "admin@example.com".to_string());
     let smtp = mail::SmtpConfig::from_env();
     if smtp.is_none() {
-        tracing::warn!("RSEC_SMTP_* not fully configured; /api/auth/request-otp will return 503");
+        tracing::warn!("RSEC_SMTP_* not fully configured; rs_ec.v1.Auth/RequestOtp will return 503");
     }
     let accounts_locked = std::env::var("RSEC_ACCOUNTS_LOCKED").map(|v| v != "false" && v != "0").unwrap_or(true);
     if accounts_locked {
@@ -1399,6 +1426,15 @@ mod handler_tests {
     //! テストごとに独立した一時ディレクトリを直接`AppState`へ渡す。
 
     use super::*;
+    /// `extra`(パス引数に当たる欄)を `base` の JSON オブジェクトへ足す。
+    fn jm(extra: serde_json::Value, base: serde_json::Value) -> serde_json::Value {
+        let mut m = base.as_object().cloned().unwrap_or_default();
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            m.insert(k, v);
+        }
+        serde_json::Value::Object(m)
+    }
+
     use crate::reviews::Review;
     use poem::test::TestClient;
 
@@ -1419,39 +1455,86 @@ mod handler_tests {
         state.auth.create_session(ADMIN_EMAIL)
     }
 
+    // ---- Connect 入口の試験(REST全廃: 旧 /api/... は 404、認証なし401・不正入力400・重複キー400・正常200) ----
+
+    #[tokio::test]
+    async fn legacy_rest_routes_are_gone_and_connect_errors_have_code_and_message() {
+        let state = make_state("connect-errors", true).await;
+        let token = admin_token(&state);
+        let client = TestClient::new(build_routes(state));
+
+        for (m, p) in [("get", "/api/products"), ("post", "/api/products"), ("post", "/api/auth/verify-otp"), ("get", "/api/auth/login-mode")] {
+            let resp = if m == "get" { client.get(p).send().await } else { client.post(p).body_json(&serde_json::json!({})).send().await };
+            resp.assert_status(poem::http::StatusCode::NOT_FOUND);
+        }
+
+        // 認証なし → 401 + {"code","message"}
+        let resp = client.post("/rs_ec.v1.Products/Create").body_json(&serde_json::json!({"name": "x", "description": "d", "price_cents": 100, "stock": 1})).send().await;
+        resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
+        let v: serde_json::Value = resp.json().await.value().deserialize();
+        assert_eq!(v["code"], "unauthenticated");
+        assert!(v["message"].is_string());
+
+        // content-type が JSON でない → 415
+        let resp = client.post("/rs_ec.v1.Products/Create").content_type("text/plain").body("hi").send().await;
+        resp.assert_status(poem::http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        // 壊れた JSON → 400、重複キー → 400、オブジェクトでない → 400
+        for bad in ["{not json", r#"{"a":1,"a":2}"#, "[1,2]"] {
+            let resp = client
+                .post("/rs_ec.v1.Products/Create")
+                .header("Authorization", format!("Bearer {token}"))
+                .content_type("application/json")
+                .body(bad)
+                .send()
+                .await;
+            resp.assert_status(poem::http::StatusCode::BAD_REQUEST);
+            let v: serde_json::Value = resp.json().await.value().deserialize();
+            assert_eq!(v["code"], "invalid_argument");
+        }
+
+        // パス引数に当たる欄が無い → 400
+        let resp = client.post("/rs_ec.v1.Products/Get").header("Authorization", format!("Bearer {token}")).body_json(&serde_json::json!({})).send().await;
+        resp.assert_status(poem::http::StatusCode::BAD_REQUEST);
+
+        // GET は受けない(POST のみ)
+        client.get("/rs_ec.v1.Products/List").send().await.assert_status(poem::http::StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+
     #[tokio::test]
     async fn login_mode_defaults_to_otp_and_requires_admin_session_to_change() {
         let state = make_state("login-mode", true).await;
         let token = admin_token(&state);
         let client = TestClient::new(build_routes(state));
 
-        let resp = client.get("/api/auth/login-mode").send().await;
+        let resp = client.post("/rs_ec.v1.Auth/GetLoginMode").body_json(&serde_json::json!({})).send().await;
         resp.assert_status_is_ok();
         let value: serde_json::Value = resp.json().await.value().deserialize();
         assert_eq!(value["login_mode"], "otp");
 
         // 未ログインでの変更は拒否される。
-        let resp = client.post("/api/auth/login-mode").body_json(&serde_json::json!({"login_mode": "otp_qr"})).send().await;
+        let resp = client.post("/rs_ec.v1.Auth/SetLoginMode").body_json(&jm(serde_json::json!({}), serde_json::json!({"login_mode": "otp_qr"}))).send().await;
         resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
 
         // RS-ECは複数アカウント制のため"qr"(QR単体)・"none"(パスワード無し)は
         // 受け付けない(auth.rsモジュールdoc参照)。
         let resp = client
-            .post("/api/auth/login-mode")
+            .post("/rs_ec.v1.Auth/SetLoginMode")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"login_mode": "qr"}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"login_mode": "qr"}))).send()
             .await;
         resp.assert_status(poem::http::StatusCode::BAD_REQUEST);
 
         let resp = client
-            .post("/api/auth/login-mode")
+            .post("/rs_ec.v1.Auth/SetLoginMode")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"login_mode": "otp_qr"}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"login_mode": "otp_qr"}))).send()
             .await;
         resp.assert_status_is_ok();
-        let resp = client.get("/api/auth/login-mode").send().await;
+        let resp = client.post("/rs_ec.v1.Auth/GetLoginMode").body_json(&serde_json::json!({})).send().await;
         let value: serde_json::Value = resp.json().await.value().deserialize();
         assert_eq!(value["login_mode"], "otp_qr");
     }
@@ -1463,40 +1546,40 @@ mod handler_tests {
         let client = TestClient::new(build_routes(state.clone()));
 
         let auth::RequestOtpOutcome::Issued(code) = state.auth.request_otp(ADMIN_EMAIL);
-        let resp = client.post("/api/auth/verify-otp").body_json(&serde_json::json!({"email": ADMIN_EMAIL, "code": code})).send().await;
+        let resp = client.post("/rs_ec.v1.Auth/VerifyOtp").body_json(&jm(serde_json::json!({}), serde_json::json!({"email": ADMIN_EMAIL, "code": code}))).send().await;
         resp.assert_status_is_ok();
         let verified: serde_json::Value = resp.json().await.value().deserialize();
         assert_eq!(verified["qr_required"], true);
         let qr_id = verified["qr_id"].as_str().unwrap().to_string();
 
-        let resp = client.get(format!("/api/auth/qr-login/whoami?id={qr_id}")).send().await;
+        let resp = client.post("/rs_ec.v1.Auth/QrLoginWhoami").body_json(&jm(serde_json::json!({"id": qr_id.to_string()}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
         let who: serde_json::Value = resp.json().await.value().deserialize();
         assert!(who["masked_email"].as_str().unwrap().contains("***"));
 
         // 確認前にfinishしても拒否される(まだ確認済みではないため)。
-        let resp = client.post("/api/auth/qr-login/finish").body_json(&serde_json::json!({"id": qr_id})).send().await;
+        let resp = client.post("/rs_ec.v1.Auth/QrLoginFinish").body_json(&jm(serde_json::json!({}), serde_json::json!({"id": qr_id}))).send().await;
         resp.assert_status(poem::http::StatusCode::FORBIDDEN);
 
         // qr-confirm.html自身が読み込み時に自動で呼ぶ操作を模す。
-        let resp = client.post("/api/auth/qr-login/confirm").body_json(&serde_json::json!({"id": qr_id})).send().await;
+        let resp = client.post("/rs_ec.v1.Auth/QrLoginConfirm").body_json(&jm(serde_json::json!({}), serde_json::json!({"id": qr_id}))).send().await;
         resp.assert_status_is_ok();
 
-        let resp = client.get(format!("/api/auth/qr-login/status?id={qr_id}")).send().await;
+        let resp = client.post("/rs_ec.v1.Auth/QrLoginStatus").body_json(&jm(serde_json::json!({"id": qr_id.to_string()}), serde_json::json!({}))).send().await;
         let status: serde_json::Value = resp.json().await.value().deserialize();
         assert_eq!(status["confirmed"], true);
 
-        let resp = client.post("/api/auth/qr-login/finish").body_json(&serde_json::json!({"id": qr_id})).send().await;
+        let resp = client.post("/rs_ec.v1.Auth/QrLoginFinish").body_json(&jm(serde_json::json!({}), serde_json::json!({"id": qr_id}))).send().await;
         resp.assert_status_is_ok();
         let finished: serde_json::Value = resp.json().await.value().deserialize();
         let session_token = finished["token"].as_str().unwrap().to_string();
 
         // 発行されたトークンで実際に保護APIへアクセスできる。
-        let resp = client.get("/api/accounts").header("Authorization", format!("Bearer {session_token}")).send().await;
+        let resp = client.post("/rs_ec.v1.Accounts/List").header("Authorization", format!("Bearer {session_token}")).body_json(&serde_json::json!({})).send().await;
         resp.assert_status_is_ok();
 
         // QRセッションは使い捨てのため、二重finishは拒否される。
-        let resp = client.post("/api/auth/qr-login/finish").body_json(&serde_json::json!({"id": qr_id})).send().await;
+        let resp = client.post("/rs_ec.v1.Auth/QrLoginFinish").body_json(&jm(serde_json::json!({}), serde_json::json!({"id": qr_id}))).send().await;
         resp.assert_status(poem::http::StatusCode::FORBIDDEN);
     }
 
@@ -1507,7 +1590,7 @@ mod handler_tests {
         let state = make_state("otp-mode-unchanged", true).await;
         let client = TestClient::new(build_routes(state.clone()));
         let auth::RequestOtpOutcome::Issued(code) = state.auth.request_otp(ADMIN_EMAIL);
-        let resp = client.post("/api/auth/verify-otp").body_json(&serde_json::json!({"email": ADMIN_EMAIL, "code": code})).send().await;
+        let resp = client.post("/rs_ec.v1.Auth/VerifyOtp").body_json(&jm(serde_json::json!({}), serde_json::json!({"email": ADMIN_EMAIL, "code": code}))).send().await;
         resp.assert_status_is_ok();
         let verified: serde_json::Value = resp.json().await.value().deserialize();
         assert!(verified.get("qr_required").is_none());
@@ -1522,7 +1605,7 @@ mod handler_tests {
         resp.assert_status_is_ok();
         let body = resp.0.into_body().into_string().await.unwrap();
         assert!(body.contains("RS-EC"));
-        assert!(body.contains("qr-login/confirm"));
+        assert!(body.contains("Auth/QrLoginConfirm"));
     }
 
     #[tokio::test]
@@ -1536,7 +1619,7 @@ mod handler_tests {
         resp.assert_status_is_ok();
         let body = resp.0.into_body().into_string().await.unwrap();
         assert!(body.contains("RS-EC"));
-        assert!(body.contains("/api/products"));
+        assert!(body.contains("rs_ec.v1.Products"));
         assert!(body.contains("カート・注文・決済連携"));
         assert!(body.contains("https://github.com/aon-co-jp/RS-EC/releases/latest"));
     }
@@ -1550,7 +1633,7 @@ mod handler_tests {
         let app = build_routes(state);
         let client = TestClient::new(app);
 
-        let resp = client.get("/api/products").send().await;
+        let resp = client.post("/rs_ec.v1.Products/List").body_json(&serde_json::json!({})).send().await;
         resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
     }
 
@@ -1562,14 +1645,14 @@ mod handler_tests {
         let client = TestClient::new(app);
 
         let resp = client
-            .post("/api/products")
+            .post("/rs_ec.v1.Products/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({ "name": "Widget", "description": "A widget", "price_cents": 1999, "stock": 10 }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "name": "Widget", "description": "A widget", "price_cents": 1999, "stock": 10 }))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
 
-        let resp = client.get("/api/products").header("Authorization", format!("Bearer {token}")).send().await;
+        let resp = client.post("/rs_ec.v1.Products/List").header("Authorization", format!("Bearer {token}")).body_json(&serde_json::json!({})).send().await;
         resp.assert_status_is_ok();
         let body: Vec<Product> = resp.json().await.value().deserialize();
         assert_eq!(body.len(), 1);
@@ -1585,29 +1668,29 @@ mod handler_tests {
         let client = TestClient::new(app);
 
         let resp = client
-            .post("/api/products")
+            .post("/rs_ec.v1.Products/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({ "name": "Gadget", "price_cents": 500, "stock": 3 }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "name": "Gadget", "price_cents": 500, "stock": 3 }))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let created: Product = resp.json().await.value().deserialize();
 
         let resp = client
-            .put(format!("/api/products/{}", created.id))
+            .post("/rs_ec.v1.Products/Update")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({ "status": "on_sale", "stock": 5 }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({"id": created.id}), serde_json::json!({ "status": "on_sale", "stock": 5 }))).send()
             .await;
         resp.assert_status_is_ok();
         let updated: Product = resp.json().await.value().deserialize();
         assert!(matches!(updated.status, ProductStatus::OnSale));
         assert_eq!(updated.stock, 5);
 
-        let resp = client.delete(format!("/api/products/{}", created.id)).header("Authorization", format!("Bearer {token}")).send().await;
+        let resp = client.post("/rs_ec.v1.Products/Delete").header("Authorization", format!("Bearer {token}")).body_json(&jm(serde_json::json!({"id": created.id}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
 
-        let resp = client.get(format!("/api/products/{}", created.id)).header("Authorization", format!("Bearer {token}")).send().await;
+        let resp = client.post("/rs_ec.v1.Products/Get").header("Authorization", format!("Bearer {token}")).body_json(&jm(serde_json::json!({"id": created.id}), serde_json::json!({}))).send().await;
         resp.assert_status(poem::http::StatusCode::NOT_FOUND);
     }
 
@@ -1619,11 +1702,11 @@ mod handler_tests {
         let client = TestClient::new(app);
 
         let resp = client
-            .post("/api/accounts/request")
-            .body_json(&serde_json::json!({ "email": "newcomer@example.com", "message": "please let me in" }))
-            .send()
+            .post("/rs_ec.v1.Accounts/RequestAccess")
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "email": "newcomer@example.com", "message": "please let me in" }))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
 
         let store = accounts::load(&data_root).await;
         assert_eq!(store.pending_requests.len(), 1);
@@ -1639,20 +1722,20 @@ mod handler_tests {
         let client = TestClient::new(app);
 
         client
-            .post("/api/accounts/request")
-            .body_json(&serde_json::json!({ "email": "member@example.com" }))
-            .send()
+            .post("/rs_ec.v1.Accounts/RequestAccess")
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "email": "member@example.com" }))).send()
             .await
-            .assert_status(poem::http::StatusCode::CREATED);
+            .assert_status(poem::http::StatusCode::OK);
 
         let store = accounts::load(&data_root).await;
         let request_id = store.pending_requests[0].id.clone();
 
         let resp = client
-            .post(format!("/api/accounts/requests/{request_id}/decide"))
+            .post("/rs_ec.v1.Accounts/Decide")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({ "approve": true, "allow_view": true, "allow_edit": false }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({"id": request_id}), serde_json::json!({ "approve": true, "allow_view": true, "allow_edit": false }))).send()
             .await;
         resp.assert_status_is_ok();
 
@@ -1675,20 +1758,20 @@ mod handler_tests {
         let client = TestClient::new(app);
 
         client
-            .post("/api/accounts/request")
-            .body_json(&serde_json::json!({ "email": "outsider@example.com" }))
-            .send()
+            .post("/rs_ec.v1.Accounts/RequestAccess")
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "email": "outsider@example.com" }))).send()
             .await
-            .assert_status(poem::http::StatusCode::CREATED);
+            .assert_status(poem::http::StatusCode::OK);
 
         let store = accounts::load(&data_root).await;
         let request_id = store.pending_requests[0].id.clone();
 
         let resp = client
-            .post(format!("/api/accounts/requests/{request_id}/decide"))
+            .post("/rs_ec.v1.Accounts/Decide")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({ "approve": true }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({"id": request_id}), serde_json::json!({ "approve": true }))).send()
             .await;
         resp.assert_status(poem::http::StatusCode::FORBIDDEN);
 
@@ -1721,39 +1804,39 @@ mod handler_tests {
 
         // 1. カテゴリ作成(管理者のみ)
         let resp = client
-            .post("/api/categories")
+            .post("/rs_ec.v1.Categories/Create")
             .header("Authorization", format!("Bearer {admin}"))
-            .body_json(&serde_json::json!({ "name": "Books", "slug": "books" }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "name": "Books", "slug": "books" }))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let category: categories::Category = resp.json().await.value().deserialize();
 
         // 2. そのカテゴリ付きで商品作成
         let resp = client
-            .post("/api/products")
+            .post("/rs_ec.v1.Products/Create")
             .header("Authorization", format!("Bearer {admin}"))
-            .body_json(&serde_json::json!({ "name": "Rust本", "price_cents": 3000, "stock": 5, "categories": [category.id] }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "name": "Rust本", "price_cents": 3000, "stock": 5, "categories": [category.id] }))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let product: Product = resp.json().await.value().deserialize();
         assert_eq!(product.categories, vec![category.id]);
 
         // 別カテゴリなしの商品も1件作成(フィルタで除外されることの確認用)
         client
-            .post("/api/products")
+            .post("/rs_ec.v1.Products/Create")
             .header("Authorization", format!("Bearer {admin}"))
-            .body_json(&serde_json::json!({ "name": "無関係商品", "price_cents": 100, "stock": 1 }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "name": "無関係商品", "price_cents": 100, "stock": 1 }))).send()
             .await
-            .assert_status(poem::http::StatusCode::CREATED);
+            .assert_status(poem::http::StatusCode::OK);
 
         // 3. カテゴリで絞り込み(一般アカウント、view権限のみ)
         let resp = client
-            .get(format!("/api/products?category={}", category.id))
+            .post("/rs_ec.v1.Products/List")
             .header("Authorization", format!("Bearer {member_token}"))
-            .send()
+            .body_json(&jm(serde_json::json!({"category": category.id.to_string()}), serde_json::json!({}))).send()
             .await;
         resp.assert_status_is_ok();
         let filtered: Vec<Product> = resp.json().await.value().deserialize();
@@ -1762,15 +1845,15 @@ mod handler_tests {
 
         // 4. 一般アカウントとしてお気に入りに追加
         let resp = client
-            .post("/api/favorites")
+            .post("/rs_ec.v1.Favorites/Add")
             .header("Authorization", format!("Bearer {member_token}"))
-            .body_json(&serde_json::json!({ "product_id": product.id }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "product_id": product.id }))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
 
         // 5. お気に入り一覧に出てくること(自分のものだけ)
-        let resp = client.get("/api/favorites").header("Authorization", format!("Bearer {member_token}")).send().await;
+        let resp = client.post("/rs_ec.v1.Favorites/List").header("Authorization", format!("Bearer {member_token}")).body_json(&serde_json::json!({})).send().await;
         resp.assert_status_is_ok();
         let favorites_list: Vec<Product> = resp.json().await.value().deserialize();
         assert_eq!(favorites_list.len(), 1);
@@ -1778,20 +1861,20 @@ mod handler_tests {
 
         // 6. お気に入りから削除
         let resp = client
-            .delete(format!("/api/favorites/{}", product.id))
+            .post("/rs_ec.v1.Favorites/Remove")
             .header("Authorization", format!("Bearer {member_token}"))
-            .send()
+            .body_json(&jm(serde_json::json!({"product_id": product.id}), serde_json::json!({}))).send()
             .await;
         resp.assert_status_is_ok();
 
         // 7. 一覧が空になっていること
-        let resp = client.get("/api/favorites").header("Authorization", format!("Bearer {member_token}")).send().await;
+        let resp = client.post("/rs_ec.v1.Favorites/List").header("Authorization", format!("Bearer {member_token}")).body_json(&serde_json::json!({})).send().await;
         resp.assert_status_is_ok();
         let empty: Vec<Product> = resp.json().await.value().deserialize();
         assert!(empty.is_empty());
 
         // カテゴリ削除(管理者のみ)の確認もついでに行う
-        let resp = client.delete(format!("/api/categories/{}", category.id)).header("Authorization", format!("Bearer {admin}")).send().await;
+        let resp = client.post("/rs_ec.v1.Categories/Delete").header("Authorization", format!("Bearer {admin}")).body_json(&jm(serde_json::json!({"id": category.id}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
     }
 
@@ -1799,12 +1882,12 @@ mod handler_tests {
     /// テストで繰り返し使う)。
     async fn seed_product(client: &TestClient<impl poem::Endpoint>, admin_token: &str) -> u64 {
         let resp = client
-            .post("/api/products")
+            .post("/rs_ec.v1.Products/Create")
             .header("Authorization", format!("Bearer {admin_token}"))
-            .body_json(&serde_json::json!({ "name": "Gadget", "description": "d", "price_cents": 500, "stock": 3 }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "name": "Gadget", "description": "d", "price_cents": 500, "stock": 3 }))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let product: Product = resp.json().await.value().deserialize();
         product.id
     }
@@ -1818,9 +1901,9 @@ mod handler_tests {
         let product_id = seed_product(&client, &admin).await;
 
         let resp = client
-            .post(format!("/api/products/{product_id}/reviews"))
-            .body_json(&serde_json::json!({ "rating": 5, "title": "Great", "body": "Loved it" }))
-            .send()
+            .post("/rs_ec.v1.Reviews/Create")
+            
+            .body_json(&jm(serde_json::json!({"id": product_id}), serde_json::json!({ "rating": 5, "title": "Great", "body": "Loved it" }))).send()
             .await;
         resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
     }
@@ -1835,10 +1918,10 @@ mod handler_tests {
 
         for bad_rating in [0, 6] {
             let resp = client
-                .post(format!("/api/products/{product_id}/reviews"))
+                .post("/rs_ec.v1.Reviews/Create")
                 .header("Authorization", format!("Bearer {admin}"))
-                .body_json(&serde_json::json!({ "rating": bad_rating, "title": "x", "body": "y" }))
-                .send()
+                
+                .body_json(&jm(serde_json::json!({"id": product_id}), serde_json::json!({ "rating": bad_rating, "title": "x", "body": "y" }))).send()
                 .await;
             resp.assert_status(poem::http::StatusCode::BAD_REQUEST);
         }
@@ -1856,54 +1939,54 @@ mod handler_tests {
 
         // 会員がレビューを投稿(投稿直後は未承認)
         let resp = client
-            .post(format!("/api/products/{product_id}/reviews"))
+            .post("/rs_ec.v1.Reviews/Create")
             .header("Authorization", format!("Bearer {member_token}"))
-            .body_json(&serde_json::json!({ "rating": 4, "title": "Nice", "body": "Works well" }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({"id": product_id}), serde_json::json!({ "rating": 4, "title": "Nice", "body": "Works well" }))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let created: Review = resp.json().await.value().deserialize();
         assert!(!created.approved);
 
         // 公開一覧(approved_only=true)にはまだ出ない
-        let resp = client.get(format!("/api/products/{product_id}/reviews?approved_only=true")).send().await;
+        let resp = client.post("/rs_ec.v1.Reviews/ListForProduct").body_json(&jm(serde_json::json!({"id": product_id, "approved_only": true}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
         let public_list: Vec<Review> = resp.json().await.value().deserialize();
         assert!(public_list.is_empty());
 
         // rating-summaryも未承認のみでは0件・平均0
-        let resp = client.get(format!("/api/products/{product_id}/rating-summary")).send().await;
+        let resp = client.post("/rs_ec.v1.Reviews/RatingSummary").body_json(&jm(serde_json::json!({"id": product_id}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
         let summary: serde_json::Value = resp.json().await.value().deserialize();
         assert_eq!(summary["review_count"], 0);
 
         // 一般公開されていない全件一覧は管理者のみ(会員は403、未ログインは401)
-        let resp = client.get(format!("/api/products/{product_id}/reviews")).send().await;
+        let resp = client.post("/rs_ec.v1.Reviews/ListForProduct").body_json(&jm(serde_json::json!({"id": product_id}), serde_json::json!({}))).send().await;
         resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
         let resp = client
-            .get(format!("/api/products/{product_id}/reviews"))
+            .post("/rs_ec.v1.Reviews/ListForProduct")
             .header("Authorization", format!("Bearer {member_token}"))
-            .send()
+            .body_json(&jm(serde_json::json!({"id": product_id}), serde_json::json!({}))).send()
             .await;
         resp.assert_status(poem::http::StatusCode::FORBIDDEN);
 
         // 管理者が承認
         let resp = client
-            .post(format!("/api/reviews/{}/approve", created.id))
+            .post("/rs_ec.v1.Reviews/Approve")
             .header("Authorization", format!("Bearer {admin}"))
-            .send()
+            .body_json(&jm(serde_json::json!({"id": created.id}), serde_json::json!({}))).send()
             .await;
         resp.assert_status_is_ok();
         let approved: Review = resp.json().await.value().deserialize();
         assert!(approved.approved);
 
         // 今度は公開一覧・rating-summaryに反映される
-        let resp = client.get(format!("/api/products/{product_id}/reviews?approved_only=true")).send().await;
+        let resp = client.post("/rs_ec.v1.Reviews/ListForProduct").body_json(&jm(serde_json::json!({"id": product_id, "approved_only": true}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
         let public_list: Vec<Review> = resp.json().await.value().deserialize();
         assert_eq!(public_list.len(), 1);
 
-        let resp = client.get(format!("/api/products/{product_id}/rating-summary")).send().await;
+        let resp = client.post("/rs_ec.v1.Reviews/RatingSummary").body_json(&jm(serde_json::json!({"id": product_id}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
         let summary: serde_json::Value = resp.json().await.value().deserialize();
         assert_eq!(summary["review_count"], 1);
@@ -1922,24 +2005,24 @@ mod handler_tests {
         // 承認済み2件(rating 5, 3) + 未承認1件(rating 1) => 平均は(5+3)/2=4.0、件数2
         for rating in [5u8, 3u8, 1u8] {
             let resp = client
-                .post(format!("/api/products/{product_id}/reviews"))
+                .post("/rs_ec.v1.Reviews/Create")
                 .header("Authorization", format!("Bearer {member_token}"))
-                .body_json(&serde_json::json!({ "rating": rating, "title": "t", "body": "b" }))
-                .send()
+                
+                .body_json(&jm(serde_json::json!({"id": product_id}), serde_json::json!({ "rating": rating, "title": "t", "body": "b" }))).send()
                 .await;
-            resp.assert_status(poem::http::StatusCode::CREATED);
+            resp.assert_status(poem::http::StatusCode::OK);
             let created: Review = resp.json().await.value().deserialize();
             if rating != 1 {
                 let resp = client
-                    .post(format!("/api/reviews/{}/approve", created.id))
+                    .post("/rs_ec.v1.Reviews/Approve")
                     .header("Authorization", format!("Bearer {admin}"))
-                    .send()
+                    .body_json(&jm(serde_json::json!({"id": created.id}), serde_json::json!({}))).send()
                     .await;
                 resp.assert_status_is_ok();
             }
         }
 
-        let resp = client.get(format!("/api/products/{product_id}/rating-summary")).send().await;
+        let resp = client.post("/rs_ec.v1.Reviews/RatingSummary").body_json(&jm(serde_json::json!({"id": product_id}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
         let summary: serde_json::Value = resp.json().await.value().deserialize();
         assert_eq!(summary["review_count"], 2);
@@ -1957,27 +2040,27 @@ mod handler_tests {
         let product_id = seed_product(&client, &admin).await;
 
         let resp = client
-            .post(format!("/api/products/{product_id}/reviews"))
+            .post("/rs_ec.v1.Reviews/Create")
             .header("Authorization", format!("Bearer {author_token}"))
-            .body_json(&serde_json::json!({ "rating": 2, "title": "meh", "body": "b" }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({"id": product_id}), serde_json::json!({ "rating": 2, "title": "meh", "body": "b" }))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let review: Review = resp.json().await.value().deserialize();
 
         // 他人は削除不可
         let resp = client
-            .delete(format!("/api/reviews/{}", review.id))
+            .post("/rs_ec.v1.Reviews/Delete")
             .header("Authorization", format!("Bearer {other_token}"))
-            .send()
+            .body_json(&jm(serde_json::json!({"id": review.id}), serde_json::json!({}))).send()
             .await;
         resp.assert_status(poem::http::StatusCode::FORBIDDEN);
 
         // 投稿者本人は削除可能
         let resp = client
-            .delete(format!("/api/reviews/{}", review.id))
+            .post("/rs_ec.v1.Reviews/Delete")
             .header("Authorization", format!("Bearer {author_token}"))
-            .send()
+            .body_json(&jm(serde_json::json!({"id": review.id}), serde_json::json!({}))).send()
             .await;
         resp.assert_status_is_ok();
     }
@@ -1993,85 +2076,85 @@ mod handler_tests {
         let client = TestClient::new(app);
 
         let resp = client
-            .post("/api/products")
+            .post("/rs_ec.v1.Products/Create")
             .header("Authorization", format!("Bearer {admin}"))
-            .body_json(&serde_json::json!({ "name": "Gadget", "price_cents": 500, "stock": 3, "status": "on_sale" }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "name": "Gadget", "price_cents": 500, "stock": 3, "status": "on_sale" }))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let product: Product = resp.json().await.value().deserialize();
 
         // カート未ログインは401
-        let resp = client.get("/api/cart").send().await;
+        let resp = client.post("/rs_ec.v1.Cart/Get").body_json(&serde_json::json!({})).send().await;
         resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
 
         // カートに2個追加
         let resp = client
-            .post("/api/cart/items")
+            .post("/rs_ec.v1.Cart/AddItem")
             .header("Authorization", format!("Bearer {member_token}"))
-            .body_json(&serde_json::json!({ "product_id": product.id, "quantity": 2 }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "product_id": product.id, "quantity": 2 }))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let cart_view: serde_json::Value = resp.json().await.value().deserialize();
         assert_eq!(cart_view["total_cents"], 1000);
 
         // 在庫を超える注文は400
         let resp = client
-            .post("/api/cart/items")
+            .post("/rs_ec.v1.Cart/AddItem")
             .header("Authorization", format!("Bearer {member_token}"))
-            .body_json(&serde_json::json!({ "product_id": product.id, "quantity": 5 }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "product_id": product.id, "quantity": 5 }))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED); // カート追加自体は在庫チェックしない
+        resp.assert_status(poem::http::StatusCode::OK); // カート追加自体は在庫チェックしない
         let resp = client
-            .post("/api/orders/checkout")
+            .post("/rs_ec.v1.Orders/Checkout")
             .header("Authorization", format!("Bearer {member_token}"))
-            .send()
+            .body_json(&serde_json::json!({})).send()
             .await;
         resp.assert_status(poem::http::StatusCode::BAD_REQUEST); // 合計7個、在庫3個のため不足
 
         // カートを在庫内(2個)に戻してから確定
         let resp = client
-            .delete(format!("/api/cart/items/{}", product.id))
+            .post("/rs_ec.v1.Cart/RemoveItem")
             .header("Authorization", format!("Bearer {member_token}"))
-            .send()
+            .body_json(&jm(serde_json::json!({"product_id": product.id}), serde_json::json!({}))).send()
             .await;
         resp.assert_status_is_ok();
         client
-            .post("/api/cart/items")
+            .post("/rs_ec.v1.Cart/AddItem")
             .header("Authorization", format!("Bearer {member_token}"))
-            .body_json(&serde_json::json!({ "product_id": product.id, "quantity": 2 }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "product_id": product.id, "quantity": 2 }))).send()
             .await
-            .assert_status(poem::http::StatusCode::CREATED);
+            .assert_status(poem::http::StatusCode::OK);
 
         let resp = client
-            .post("/api/orders/checkout")
+            .post("/rs_ec.v1.Orders/Checkout")
             .header("Authorization", format!("Bearer {member_token}"))
-            .send()
+            .body_json(&serde_json::json!({})).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let order: order::Order = resp.json().await.value().deserialize();
         assert_eq!(order.total_cents, 1000);
         assert!(matches!(order.status, order::OrderStatus::Paid));
         assert!(order.payment_reference.starts_with("MOCK-"));
 
         // カートは空になっている
-        let resp = client.get("/api/cart").header("Authorization", format!("Bearer {member_token}")).send().await;
+        let resp = client.post("/rs_ec.v1.Cart/Get").header("Authorization", format!("Bearer {member_token}")).body_json(&serde_json::json!({})).send().await;
         let cart_view: serde_json::Value = resp.json().await.value().deserialize();
         assert_eq!(cart_view["items"].as_array().unwrap().len(), 0);
 
         // 在庫が2個減って1個になっている
-        let resp = client.get(format!("/api/products/{}", product.id)).header("Authorization", format!("Bearer {admin}")).send().await;
+        let resp = client.post("/rs_ec.v1.Products/Get").header("Authorization", format!("Bearer {admin}")).body_json(&jm(serde_json::json!({"id": product.id}), serde_json::json!({}))).send().await;
         let updated_product: Product = resp.json().await.value().deserialize();
         assert_eq!(updated_product.stock, 1);
 
         // 本人は注文を閲覧できる
         let resp = client
-            .get(format!("/api/orders/{}", order.id))
+            .post("/rs_ec.v1.Orders/Get")
             .header("Authorization", format!("Bearer {member_token}"))
-            .send()
+            .body_json(&jm(serde_json::json!({"id": order.id}), serde_json::json!({}))).send()
             .await;
         resp.assert_status_is_ok();
     }
@@ -2086,29 +2169,29 @@ mod handler_tests {
         let client = TestClient::new(app);
 
         let resp = client
-            .post("/api/products")
+            .post("/rs_ec.v1.Products/Create")
             .header("Authorization", format!("Bearer {admin}"))
-            .body_json(&serde_json::json!({ "name": "Thing", "price_cents": 200, "stock": 5, "status": "on_sale" }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "name": "Thing", "price_cents": 200, "stock": 5, "status": "on_sale" }))).send()
             .await;
         let product: Product = resp.json().await.value().deserialize();
 
         client
-            .post("/api/cart/items")
+            .post("/rs_ec.v1.Cart/AddItem")
             .header("Authorization", format!("Bearer {owner_token}"))
-            .body_json(&serde_json::json!({ "product_id": product.id, "quantity": 1 }))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({ "product_id": product.id, "quantity": 1 }))).send()
             .await
-            .assert_status(poem::http::StatusCode::CREATED);
+            .assert_status(poem::http::StatusCode::OK);
 
-        let resp = client.post("/api/orders/checkout").header("Authorization", format!("Bearer {owner_token}")).send().await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        let resp = client.post("/rs_ec.v1.Orders/Checkout").header("Authorization", format!("Bearer {owner_token}")).body_json(&serde_json::json!({})).send().await;
+        resp.assert_status(poem::http::StatusCode::OK);
         let order: order::Order = resp.json().await.value().deserialize();
 
-        let resp = client.get(format!("/api/orders/{}", order.id)).header("Authorization", format!("Bearer {other_token}")).send().await;
+        let resp = client.post("/rs_ec.v1.Orders/Get").header("Authorization", format!("Bearer {other_token}")).body_json(&jm(serde_json::json!({"id": order.id}), serde_json::json!({}))).send().await;
         resp.assert_status(poem::http::StatusCode::FORBIDDEN);
 
-        let resp = client.get(format!("/api/orders/{}", order.id)).header("Authorization", format!("Bearer {admin}")).send().await;
+        let resp = client.post("/rs_ec.v1.Orders/Get").header("Authorization", format!("Bearer {admin}")).body_json(&jm(serde_json::json!({"id": order.id}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
     }
 }

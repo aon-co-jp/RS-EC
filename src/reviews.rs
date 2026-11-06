@@ -19,7 +19,7 @@ pub struct Review {
     pub title: String,
     pub body: String,
     pub created_at: u64,
-    /// 投稿直後は`false`(管理者承認待ち)。`POST /api/reviews/:id/approve`
+    /// 投稿直後は`false`(管理者承認待ち)。`POST /rs_ec.v1.Reviews/Approve`
     /// でのみ`true`になる。
     pub approved: bool,
 }

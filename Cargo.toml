@@ -11,6 +11,7 @@ name = "rs-ec"
 path = "src/main.rs"
 
 [dependencies]
+rust-json = { git = "https://github.com/aon-co-jp/RS-JSON", features = ["fast"] }
 poem = "3.1"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
