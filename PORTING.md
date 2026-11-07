@@ -153,3 +153,7 @@
 - WSL でリリースビルド(必要な glibc は 2.34、VPS は 2.39)→ `/root/<repo>/target/release/<bin>` を入れ替え(旧バイナリは `*.bak-20261107` に保存)→ `systemctl restart` → 確認(healthz 200、Connect 認証なし 401、旧 `/api/...` 404)。失敗時は自動で戻す手順だったが、戻す必要は生じなかった。
 - VPS 上の git clone(`/root/RS-Blog`・`/root/RS-EC`、`/root/repository/...`)は古いコミットのまま(未コミット変更は無し)。バイナリだけを差し替えたので、次回は `git fetch` と新規 clone でビルドし直すこと(`git pull` はしない)。
 - 再起動でメモリ上のログインセッションは失効した(データの JSON は無変更)。
+
+### 脆弱性対応 / Security dependency update (2026-11-08)
+- 日本語: `cargo update -p h2 -p rustls -p rustls-webpki -p webpki-roots`(Cargo.lockのみ)。h2 0.4.15→0.4.20(RUSTSEC-2026-0258)、rustls 0.23.42→0.23.46、rustls-webpki 0.103.13→0.103.16、webpki-roots 1.0.9→1.0.11。cargo test 全件成功。major更新は未実施。
+- English: Cargo.lock-only update of h2 (0.4.20), rustls (0.23.46), rustls-webpki (0.103.16) and webpki-roots (1.0.11); cargo test passes. Major bumps not done.
