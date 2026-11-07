@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RS-EC — easy-web.tokyo</title>
+<meta name="description" content="EC-CUBEの高速・高セキュリティ・省メモリなRust+RPoem版。 A fast, secure, low-memory Rust + RPoem edition of EC-CUBE.">
+<style>
+:root{--bg:#fff;--fg:#14181f;--sub:#57606a;--card:#f6f8fa;--line:#d0d7de;--acc:#1f6feb;--warn:#c62828;--ok:#1a7f37}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--sub:#8b949e;--card:#161b22;--line:#30363d;--acc:#4a9eff;--warn:#ff7b72;--ok:#3fb950}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.7 system-ui,-apple-system,"Segoe UI","Hiragino Sans","Noto Sans JP",sans-serif}
+main{max-width:860px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:1.9rem;margin:8px 0 4px}
+h2{font-size:1.25rem;margin:36px 0 8px;padding-top:8px;border-top:1px solid var(--line)}
+.tag{color:var(--sub);margin:0 0 16px}
+.en{color:var(--sub);font-size:.95rem;margin:2px 0 10px}
+.warn{border:1px solid var(--warn);border-radius:12px;padding:12px 16px;margin:18px 0}
+.warn b{color:var(--warn)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:12px 0}
+table{width:100%;border-collapse:collapse;font-size:.92rem}
+th,td{text-align:left;padding:10px 8px;border-top:1px solid var(--line);vertical-align:top}
+th{color:var(--sub);font-weight:600;border-top:0}
+a{color:var(--acc)}
+.btn{display:inline-block;min-height:44px;padding:9px 16px;border-radius:10px;background:var(--acc);color:#fff;text-decoration:none;font-weight:600}
+code{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:.88em;overflow-wrap:anywhere}
+.hash{font:12px/1.4 ui-monospace,Consolas,monospace;color:var(--sub);overflow-wrap:anywhere}
+ol,ul{padding-left:1.3rem}
+li{margin:6px 0}
+footer{margin-top:40px;color:var(--sub);font-size:.88rem}
+@media (max-width:560px){h1{font-size:1.5rem} th:nth-child(3),td:nth-child(3){display:none}}
+</style>
+</head>
+<body>
+<main>
+<h1>RS-EC</h1>
+<p class="tag">EC-CUBEの高速・高セキュリティ・省メモリなRust+RPoem版。</p>
+<p class="en">A fast, secure, low-memory Rust + RPoem edition of EC-CUBE.</p>
+
+<h2>ダウンロード / Download <small>(v0.1.0)</small></h2>
+<p><a class="btn" href="https://github.com/aon-co-jp/RS-EC/releases/tag/v0.1.0">最新のリリースページ / Release page (GitHub)</a></p>
+<table>
+<tr><th>対象 / For</th><th>ファイル / File</th><th>SHA-256</th></tr>
+<tr><td>Linux (64bit)</td><td><a href="https://github.com/aon-co-jp/RS-EC/releases/download/v0.1.0/rs-ec-linux-x86_64.tar.gz">rs-ec-linux-x86_64.tar.gz</a> (3.0 MB)</td><td class="hash">7fcf09b03f4d77afb030beadc64a5bbd8de29f959100699c2079c8e07f5bb462</td></tr>
+<tr><td>Windows</td><td><a href="https://github.com/aon-co-jp/RS-EC/releases/download/v0.1.0/rs-ec-windows-x86_64.zip">rs-ec-windows-x86_64.zip</a> (2.5 MB)</td><td class="hash">82df0a02aa9665f5ad9c09437f9629a01cceab8d1ebfb88487b889fdd0e1dce7</td></tr>
+</table>
+<p class="en">署名のない開発用のビルドの場合があります。ダウンロードしたら、上の SHA-256 と一致するか確かめてください。 / Some builds are unsigned - please verify the SHA-256 after downloading.</p>
+
+<h2>特長 / Features</h2>
+<ul>
+<li>ECサイトの商品・注文管理をRustで。<span class="en"> Product and order management for online shops, in Rust.</span></li>
+<li>管理APIはConnect(REST全廃方針)。<span class="en"> Admin API uses Connect (REST is being phased out).</span></li>
+</ul>
+
+<h2>ドキュメント / Documentation</h2>
+<p>使い方・設計・既知の制限は、<a href="https://github.com/aon-co-jp/RS-EC">リポジトリの README / CLAUDE.md / PORTING.md</a>(日本語・英語)にあります。<span class="en"> Usage, design and known limits are in the repository's README / CLAUDE.md / PORTING.md (Japanese and English).</span></p>
+
+<footer>
+<p>ライセンスはリポジトリを参照 / See the repository for the license ・ <a href="https://github.com/aon-co-jp/RS-EC">ソースコード / Source (GitHub)</a> ・ <a href="/">easy-web.tokyo</a></p>
+</footer>
+</main>
+</body>
+</html>
