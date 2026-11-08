@@ -157,3 +157,7 @@
 ### 脆弱性対応 / Security dependency update (2026-11-08)
 - 日本語: `cargo update -p h2 -p rustls -p rustls-webpki -p webpki-roots`(Cargo.lockのみ)。h2 0.4.15→0.4.20(RUSTSEC-2026-0258)、rustls 0.23.42→0.23.46、rustls-webpki 0.103.13→0.103.16、webpki-roots 1.0.9→1.0.11。cargo test 全件成功。major更新は未実施。
 - English: Cargo.lock-only update of h2 (0.4.20), rustls (0.23.46), rustls-webpki (0.103.16) and webpki-roots (1.0.11); cargo test passes. Major bumps not done.
+
+### tokio更新 / tokio update (2026-11-08)
+- 日本語: `cargo update -p tokio` で 1.54.1 へ(RUSTSEC-2026-0386)。Cargo.lockのみ、`cargo test`成功、`cargo audit`の警告は0。
+- English: Cargo.lock-only bump of tokio to 1.54.1 (RUSTSEC-2026-0386); tests pass and `cargo audit` reports no warnings.
