@@ -39,9 +39,9 @@ pub async fn save(data_root: &Path, store: &AccountStore) -> std::io::Result<()>
 }
 
 pub fn generate_request_id() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let bytes: [u8; 12] = rng.gen();
+    use rand::RngExt;
+    let mut rng = rand::rng();
+    let bytes: [u8; 12] = rng.random();
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
