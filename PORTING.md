@@ -161,3 +161,38 @@
 ### tokio更新 / tokio update (2026-11-08)
 - 日本語: `cargo update -p tokio` で 1.54.1 へ(RUSTSEC-2026-0386)。Cargo.lockのみ、`cargo test`成功、`cargo audit`の警告は0。
 - English: Cargo.lock-only bump of tokio to 1.54.1 (RUSTSEC-2026-0386); tests pass and `cargo audit` reports no warnings.
+
+
+## 再開用メッセージ / Resume message (2026-11-15, 別アカウントでの再開用 / for resuming on another account)
+
+### 日本語
+**到達点(完了・確認済み)**
+- REST 全廃は完了。自前 API の操作 36 個を Connect(`POST /rs_ec.v1.<Service>/<Method>`、JSON、`Authorization: Bearer`)へ移し、旧 `/api/...` は削除(404)。残したのは画面・運用用の `GET /`・`/healthz`・`/qr-confirm.html` のみ(例外0、台帳掲載なし)。
+- 実装は `src/connect.rs`(RS-JSON の `from_str_secure` で上限つき読み込み、エラーは `{"code","message"}`)と `src/main.rs` の `rpc_table!`(唯一のルート表)。`cargo test` 48 件成功。ブラウザで `/qr-confirm.html` が白画面にならないことを確認済み。
+- 本番(VPS `ssh conoha`、`rs-ec.service`、ポート8102): 2026-11-07 に WSL ビルド(glibc 2.34)で入れ替え済み、healthz 200・Connect 認証なし 401・旧パス 404 を確認。旧バイナリは `target/release/*.bak-20261107`。VPS の clone(`/root/RS-EC`)は 2026-11-15 に `git fetch` + `git reset --hard origin/main` で整列済み(**`git pull` はしない**)。
+**未了・注意**
+- 11-07 以降に他セッションが依存更新(rand 0.10 / sha2 0.11)と ARM64 の CI を `main` へ追加した。**この版は本番へ未反映**(本番は 11-07 のビルド)。反映するなら WSL でリリースビルド → glibc 2.39 以下を確認 → scp → バックアップ → 入れ替え → 再起動 → 確認(`MSYS_NO_PATHCONV=1 wsl -d Ubuntu -- bash スクリプト`、VPS でビルドしない)。
+- 管理者 OTP+QR の通しは SMTP が無いとローカルで試せない(`cargo test` の全フロー試験のみで確認)。
+- 旧 REST を叩く外部スクリプトがあれば壊れる(互換は残していない)。
+- `F:\_restdeploy`(一時バイナリ置き場)は手で削除してよい。
+**貼り付け用メッセージ**
+> `aon-co-jp/RS-EC` を新しく clone して再開してください(`git pull` ではなく新規 clone)。REST 全廃は完了済みで、API は `POST /rs_ec.v1.<Service>/<Method>`(JSON)です。この README・CLAUDE・PORTING の「REST 全廃・Connect 移行」節と本節を読み、(1) 最新の `main`(依存更新・ARM64 CI 込み)をビルドして `cargo test` を通す、(2) 問題なければ WSL でリリースビルドして VPS の `rs-ec.service`(ポート8102)へ反映、(3) 反映後に healthz 200・Connect 401・旧 `/api/...` 404 を確認、の順に進めてください。ルートを足すときは `rpc_table!` に1行足し、REST は作らないこと。共通方針は `aon-co-jp/runo` の `API-POLICY.md`。チャットは日本語のみ。
+
+### English
+**Where things stand (done and verified)**
+- REST is abolished. All 36 own operations moved to Connect (`POST /rs_ec.v1.<Service>/<Method>`, JSON, `Authorization: Bearer`); the old `/api/...` routes are removed (404). Only the UI/ops GETs `/`, `/healthz` and `/qr-confirm.html` remain (no ledger exceptions).
+- Implementation: `src/connect.rs` (RS-JSON `from_str_secure` with limits; errors are `{"code","message"}`) and the single route table `rpc_table!` in `src/main.rs`. `cargo test`: 48 passing. `/qr-confirm.html` was checked in a browser (no white screen).
+- Production (VPS `ssh conoha`, `rs-ec.service`, port 8102): swapped on 2026-11-07 using a WSL build (glibc 2.34); healthz 200, Connect without auth 401, old path 404 verified. Old binary kept as `target/release/*.bak-20261107`. The VPS clone (`/root/RS-EC`) was aligned on 2026-11-15 with `git fetch` + `git reset --hard origin/main` (**never `git pull`**).
+**Open items / cautions**
+- After 11-07 other sessions pushed dependency updates (rand 0.10 / sha2 0.11) and an ARM64 CI job to `main`. **That build is not deployed** (production runs the 11-07 build). To deploy: WSL release build -> confirm glibc <= 2.39 -> scp -> back up -> swap -> restart -> verify (`MSYS_NO_PATHCONV=1 wsl -d Ubuntu -- bash script`; do not build on the VPS).
+- The admin OTP+QR flow cannot be run locally without SMTP (covered only by the `cargo test` full-flow tests).
+- Any external script still calling the old REST routes will break (no compatibility layer was kept).
+- `F:\_restdeploy` (temporary binaries) can be deleted by hand.
+**Paste-ready message**
+> Resume `aon-co-jp/RS-EC` from a fresh clone (not `git pull`). REST abolition is done; the API is `POST /rs_ec.v1.<Service>/<Method>` (JSON). Read the "REST abolition / Connect migration" sections and this section in README / CLAUDE / PORTING, then: (1) build the latest `main` (with the dependency updates and ARM64 CI) and get `cargo test` green, (2) if fine, release-build in WSL and deploy to the VPS `rs-ec.service` (port 8102), (3) verify healthz 200, Connect 401 without auth, old `/api/...` 404. To add a route, add one line to `rpc_table!`; never add REST. Shared policy: `API-POLICY.md` in `aon-co-jp/runo`. Chat in Japanese only.
+
+## REST abolition / Connect migration (English summary, 2026-11-06..07)
+- All own APIs (36 operations) are Connect unary calls: `POST /rs_ec.v1.<Service>/<Method>`, `content-type: application/json`, JSON object body (path/query values go into JSON fields), `Authorization: Bearer <session>`.
+- JSON in with RS-JSON `from_str_secure` (64 KiB, depth 16, duplicate keys rejected), JSON out with `rust_json::fast`; errors `{"code","message"}`; success is always HTTP 200.
+- Old `/api/...` REST routes were deleted; kept as exceptions: `GET /`, `GET /healthz`, `GET /qr-confirm.html` (UI/ops).
+- Tests: 48 passing, including old-REST-404, 401 without auth, 400 for bad/duplicate-key JSON, 415 for non-JSON content-type, 405 for GET.
