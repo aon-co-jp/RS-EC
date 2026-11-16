@@ -481,3 +481,8 @@ VPS上の作業パス: `/root/repository/RS-EC`(2026-08-28、VPSディレクト�
 - JSON in with RS-JSON `from_str_secure` (64 KiB, depth 16, duplicate keys rejected), JSON out with `rust_json::fast`; errors `{"code","message"}`; success is always HTTP 200.
 - Old `/api/...` REST routes were deleted; kept as exceptions: `GET /`, `GET /healthz`, `GET /qr-confirm.html` (UI/ops).
 - Tests: 48 passing, including old-REST-404, 401 without auth, 400 for bad/duplicate-key JSON, 415 for non-JSON content-type, 405 for GET.
+
+## 2026-11-16 Connect 移行後の追加確認(別セッション)
+- 手元でビルドした実サーバー(一時データ領域、SMTPなし)に `curl` で全ルートを実測: 認証が要る操作は 401、本文不備・重複キーは 400、旧 `/api/...`・`/admin/...` は 404。`GET /qr-confirm.html` はブラウザで白画面にならず(無効な id では「無効または期限切れ」を表示、コンソールの 404 はその確認呼び出し)。
+- ログイン後の正常系(Orders/Checkout、Categories、Pages、Tags、Comments、QRログイン、`otp_qr` の第二要素)は `cargo test`(実ハンドラ+本番と同じルート表 `build_routes`)で通る。RS-EC は  48 件成功(Orders の在庫減少・他人の注文は見えない、Categories、Reviews を含む)。RS-EC に Pages/Tags/Comments は無い。
+- **未確認**: 本番でのログイン後の呼び出し。OTP は管理者メールにだけ届き、`otp_qr` ではさらにスマホ側の QR 確認(本人操作)が要るため、本番では実施していない。実施するには管理者がメールの OTP を提供し、`otp_qr` の場合は端末で `/qr-confirm.html` を開く必要がある。
