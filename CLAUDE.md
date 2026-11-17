@@ -486,3 +486,7 @@ VPS上の作業パス: `/root/repository/RS-EC`(2026-08-28、VPSディレクト�
 - 手元でビルドした実サーバー(一時データ領域、SMTPなし)に `curl` で全ルートを実測: 認証が要る操作は 401、本文不備・重複キーは 400、旧 `/api/...`・`/admin/...` は 404。`GET /qr-confirm.html` はブラウザで白画面にならず(無効な id では「無効または期限切れ」を表示、コンソールの 404 はその確認呼び出し)。
 - ログイン後の正常系(Orders/Checkout、Categories、Pages、Tags、Comments、QRログイン、`otp_qr` の第二要素)は `cargo test`(実ハンドラ+本番と同じルート表 `build_routes`)で通る。RS-EC は 48 件成功(Orders の在庫減少・他人の注文は見えない、Categories、Reviews を含む)。RS-EC に Pages/Tags/Comments は無い。
 - **未確認**: 本番でのログイン後の呼び出し。OTP は管理者メールにだけ届き、`otp_qr` ではさらにスマホ側の QR 確認(本人操作)が要るため、本番では実施していない。実施するには管理者がメールの OTP を提供し、`otp_qr` の場合は端末で `/qr-confirm.html` を開く必要がある。
+
+## 2026-11-17 再開用メモ / Resume memo
+- 日本語: RustSec依存更新(h2/rustls/webpki/tokio)と本番ログイン後の通し確認を2026-11-08に完了。詳細・再開用メッセージは [`PORTING.md`](PORTING.md) 末尾。
+- English: RustSec dependency updates (h2/rustls/webpki/tokio) and an authenticated production check were completed on 2026-11-08. Details and the resume message are at the end of [`PORTING.md`](PORTING.md).

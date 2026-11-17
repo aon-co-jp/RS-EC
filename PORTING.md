@@ -196,3 +196,19 @@
 - JSON in with RS-JSON `from_str_secure` (64 KiB, depth 16, duplicate keys rejected), JSON out with `rust_json::fast`; errors `{"code","message"}`; success is always HTTP 200.
 - Old `/api/...` REST routes were deleted; kept as exceptions: `GET /`, `GET /healthz`, `GET /qr-confirm.html` (UI/ops).
 - Tests: 48 passing, including old-REST-404, 401 without auth, 400 for bad/duplicate-key JSON, 415 for non-JSON content-type, 405 for GET.
+
+## 2026-11-17 再開用メモ(別アカウントでの再開) / Resume memo (for another account)
+
+**日本語**
+- 完了(2026-11-08): RustSec対応で `Cargo.lock` を更新(h2 0.4.20、rustls 0.23.46、rustls-webpki 0.103.16、webpki-roots 1.0.11、tokio 1.54.1)。`cargo test` 全件成功、`cargo audit` 警告0。VPS(`/root/repository/RS-EC`、`/root/RS-EC` は同じ場所へのリンク)は `git fetch` + `merge --ff-only` → `cargo build --release` → `systemctl restart rs-ec`。旧バイナリは `target/release/*.bak-20261108`。
+- 本番での通し確認(2026-11-08、公開URL `https://runo.tokyo/ec`、ポート 8102): 管理者メールOTPでログイン → 商品(Products) の一覧・作成(下書き)・取得・削除 → ログアウト後は401。確認用データは削除済み。
+- 呼び方の落とし穴: `POST /rs_ec.v1.<サービス>/<メソッド>`、取得・削除は本文に `{"id": N}` を入れる(`.../Get/1` のようなパス形式は404)。認証は `Authorization: Bearer <セッション>`、セッションはメモリ上のみで再起動で失効。OTPは `Auth/RequestOtp`(`{"email":...}`)→ メール「RS-EC ログインコード」→ `Auth/VerifyOtp`(`{"email","code"}`)。OTPやパスワードはClaudeが入力しない(本人がPowerShellで実行し、セッションだけを `F:\` 直下のtxtに保存)。
+- 未了: 別セッションがmajor更新(rand 0.10・sha2 0.11)を入れた旨が`F:\runo\CLAUDE.md`にあるが、本セッションでは未確認。QRログイン・`otp_qr` 方式の本番通し確認。
+- **再開用メッセージ(別アカウントへ貼り付け)**: 「`F:\RS-EC` と `F:\runo` で再開。`git fetch` で最新を確認し(`git pull` はせず fast-forward のみ)、PORTING.md末尾「2026-11-17 再開用メモ」を読む。次の作業: (1) major更新後の `cargo test`/`cargo audit` と本番の通し確認、(2) QRログイン/`otp_qr`の本番確認(OTPは本人が入力)。秘密は表示・コミットしない。」
+
+**English**
+- Done (2026-11-08): RustSec fixes in `Cargo.lock` only (h2 0.4.20, rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.11, tokio 1.54.1). `cargo test` passes and `cargo audit` reports no warnings. On the VPS (`/root/repository/RS-EC`; `/root/RS-EC` links there): `git fetch` + `merge --ff-only` → `cargo build --release` → `systemctl restart rs-ec`. Previous binaries: `target/release/*.bak-20261108`.
+- Verified in production (2026-11-08, public URL `https://runo.tokyo/ec`, port 8102): admin e-mail OTP login → list / create (draft) / get / delete → 401 after logout. Test data was deleted.
+- Call-shape pitfalls: `POST /rs_ec.v1.<Service>/<Method>`; get and delete take `{"id": N}` in the body (a path form such as `.../Get/1` returns 404). Auth is `Authorization: Bearer <session>`; sessions live in memory only and die on restart. OTP: `Auth/RequestOtp` (`{"email":...}`) → e-mail → `Auth/VerifyOtp` (`{"email","code"}`). Claude never types OTPs or passwords; the owner runs PowerShell and stores only the session in a txt at the root of `F:\`.
+- Open: `F:\runo\CLAUDE.md` says another session later applied major bumps (rand 0.10, sha2 0.11); not verified in this session. QR login and the `otp_qr` mode are not verified in production.
+- **Resume message (paste into the other account)**: "Resume in `F:\RS-EC` and `F:\runo`. `git fetch` first (no `git pull`; fast-forward only), then read 'Resume memo 2026-11-17' at the end of PORTING.md. Next: (1) `cargo test`/`cargo audit` after the major bumps and a production end-to-end check, (2) QR login / `otp_qr` in production (the owner types the OTP). Never print or commit secrets."
