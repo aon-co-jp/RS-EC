@@ -212,3 +212,7 @@
 - Call-shape pitfalls: `POST /rs_ec.v1.<Service>/<Method>`; get and delete take `{"id": N}` in the body (a path form such as `.../Get/1` returns 404). Auth is `Authorization: Bearer <session>`; sessions live in memory only and die on restart. OTP: `Auth/RequestOtp` (`{"email":...}`) → e-mail → `Auth/VerifyOtp` (`{"email","code"}`). Claude never types OTPs or passwords; the owner runs PowerShell and stores only the session in a txt at the root of `F:\`.
 - Open: `F:\runo\CLAUDE.md` says another session later applied major bumps (rand 0.10, sha2 0.11); not verified in this session. QR login and the `otp_qr` mode are not verified in production.
 - **Resume message (paste into the other account)**: "Resume in `F:\RS-EC` and `F:\runo`. `git fetch` first (no `git pull`; fast-forward only), then read 'Resume memo 2026-11-17' at the end of PORTING.md. Next: (1) `cargo test`/`cargo audit` after the major bumps and a production end-to-end check, (2) QR login / `otp_qr` in production (the owner types the OTP). Never print or commit secrets."
+
+## 2026-11-20 依存の脆弱性修正 / Dependency security fix
+**日本語**: lettre 0.11.24(RUSTSEC-2026-0560〜0565) を更新し、`cargo test --locked` が全件成功しました(本番反映は別途)。
+**English**: Updated lettre 0.11.24(RUSTSEC-2026-0560〜0565); `cargo test --locked` passes (production deploy is separate).
