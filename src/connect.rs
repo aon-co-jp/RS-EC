@@ -1,7 +1,7 @@
 //! Connect プロトコルの「単純呼び出し(unary)」入口(REST全廃、2026-11-06)。
 //!
 //! 形式は `POST /<パッケージ>.<Service>/<Method>`、`content-type: application/json`、本文は JSON オブジェクト。
-//! 例: `POST /rs_ec.v1.Posts/Get` に `{"id": 3}`。認証は従来どおり `Authorization: Bearer <セッション>`。
+//! 例: `POST /rs_ec.Posts/Get` に `{"id": 3}`。認証は従来どおり `Authorization: Bearer <セッション>`。
 //! **JSON の読み込みは RS-JSON の `from_str_secure`(サイズ・深さ・重複キーの上限つき)**。
 //! 成功は HTTP 200 + JSON(文字列だけを返す操作は `{"message": "..."}`)。失敗は `{"code": "...", "message": "..."}`
 //! (HTTP ステータスは Connect の対応表: 400/401/403/404/409/413/429/503 など)。
