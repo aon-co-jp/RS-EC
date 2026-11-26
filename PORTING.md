@@ -137,8 +137,8 @@
 
 **状況**: 自前の API の操作 36 個(旧ルート 28 本)をすべて Connect に移し、旧 REST(`/api/...`)の経路は**削除した**(旧パスは 404)。ユーザー決定(2026-11-04)の「REST 全廃・gRPC / Connect へ」に従う。方針の正本は `aon-co-jp/runo` の `API-POLICY.md`。
 
-- **呼び方**: `POST /rs_ec.v1.<Service>/<Method>`、`content-type: application/json`、本文は JSON オブジェクト。認証は従来どおり `Authorization: Bearer <セッション>`。
-  パス引数・クエリだった値は、JSON の欄に入れる(例: `POST /rs_ec.v1.Products/Get ほか` に `{"id": 3}`)。
+- **呼び方**: `POST /rs_ec.<Service>/<Method>`、`content-type: application/json`、本文は JSON オブジェクト。認証は従来どおり `Authorization: Bearer <セッション>`。
+  パス引数・クエリだった値は、JSON の欄に入れる(例: `POST /rs_ec.Products/Get ほか` に `{"id": 3}`)。
 - **サービス**: Auth(RequestOtp, VerifyOtp, Logout, GetLoginMode, SetLoginMode, QrLogin*)・Accounts・Products・Categories・Favorites・Reviews・Cart・Orders
 - **読み込みは RS-JSON**(`rust_json::from_str_secure`: 本文 64 KiB・深さ16・重複キー拒否)、書き出しは `rust_json::fast`。
 - **エラー**: `{"code": "...", "message": "..."}`(HTTP: 400 不正入力・重複キー / 401 未認証 / 403 / 404 / 415 / 503 など)。成功は常に 200(文字列だけの応答は `{"message": "..."}`)。
@@ -167,7 +167,7 @@
 
 ### 日本語
 **到達点(完了・確認済み)**
-- REST 全廃は完了。自前 API の操作 36 個を Connect(`POST /rs_ec.v1.<Service>/<Method>`、JSON、`Authorization: Bearer`)へ移し、旧 `/api/...` は削除(404)。残したのは画面・運用用の `GET /`・`/healthz`・`/qr-confirm.html` のみ(例外0、台帳掲載なし)。
+- REST 全廃は完了。自前 API の操作 36 個を Connect(`POST /rs_ec.<Service>/<Method>`、JSON、`Authorization: Bearer`)へ移し、旧 `/api/...` は削除(404)。残したのは画面・運用用の `GET /`・`/healthz`・`/qr-confirm.html` のみ(例外0、台帳掲載なし)。
 - 実装は `src/connect.rs`(RS-JSON の `from_str_secure` で上限つき読み込み、エラーは `{"code","message"}`)と `src/main.rs` の `rpc_table!`(唯一のルート表)。`cargo test` 48 件成功。ブラウザで `/qr-confirm.html` が白画面にならないことを確認済み。
 - 本番(VPS `ssh conoha`、`rs-ec.service`、ポート8102): 2026-11-07 に WSL ビルド(glibc 2.34)で入れ替え済み、healthz 200・Connect 認証なし 401・旧パス 404 を確認。旧バイナリは `target/release/*.bak-20261107`。VPS の clone(`/root/RS-EC`)は 2026-11-15 に `git fetch` + `git reset --hard origin/main` で整列済み(**`git pull` はしない**)。
 **未了・注意**
@@ -176,11 +176,11 @@
 - 旧 REST を叩く外部スクリプトがあれば壊れる(互換は残していない)。
 - `F:\_restdeploy`(一時バイナリ置き場)は手で削除してよい。
 **貼り付け用メッセージ**
-> `aon-co-jp/RS-EC` を新しく clone して再開してください(`git pull` ではなく新規 clone)。REST 全廃は完了済みで、API は `POST /rs_ec.v1.<Service>/<Method>`(JSON)です。この README・CLAUDE・PORTING の「REST 全廃・Connect 移行」節と本節を読み、(1) 最新の `main`(依存更新・ARM64 CI 込み)をビルドして `cargo test` を通す、(2) 問題なければ WSL でリリースビルドして VPS の `rs-ec.service`(ポート8102)へ反映、(3) 反映後に healthz 200・Connect 401・旧 `/api/...` 404 を確認、の順に進めてください。ルートを足すときは `rpc_table!` に1行足し、REST は作らないこと。共通方針は `aon-co-jp/runo` の `API-POLICY.md`。チャットは日本語のみ。
+> `aon-co-jp/RS-EC` を新しく clone して再開してください(`git pull` ではなく新規 clone)。REST 全廃は完了済みで、API は `POST /rs_ec.<Service>/<Method>`(JSON)です。この README・CLAUDE・PORTING の「REST 全廃・Connect 移行」節と本節を読み、(1) 最新の `main`(依存更新・ARM64 CI 込み)をビルドして `cargo test` を通す、(2) 問題なければ WSL でリリースビルドして VPS の `rs-ec.service`(ポート8102)へ反映、(3) 反映後に healthz 200・Connect 401・旧 `/api/...` 404 を確認、の順に進めてください。ルートを足すときは `rpc_table!` に1行足し、REST は作らないこと。共通方針は `aon-co-jp/runo` の `API-POLICY.md`。チャットは日本語のみ。
 
 ### English
 **Where things stand (done and verified)**
-- REST is abolished. All 36 own operations moved to Connect (`POST /rs_ec.v1.<Service>/<Method>`, JSON, `Authorization: Bearer`); the old `/api/...` routes are removed (404). Only the UI/ops GETs `/`, `/healthz` and `/qr-confirm.html` remain (no ledger exceptions).
+- REST is abolished. All 36 own operations moved to Connect (`POST /rs_ec.<Service>/<Method>`, JSON, `Authorization: Bearer`); the old `/api/...` routes are removed (404). Only the UI/ops GETs `/`, `/healthz` and `/qr-confirm.html` remain (no ledger exceptions).
 - Implementation: `src/connect.rs` (RS-JSON `from_str_secure` with limits; errors are `{"code","message"}`) and the single route table `rpc_table!` in `src/main.rs`. `cargo test`: 48 passing. `/qr-confirm.html` was checked in a browser (no white screen).
 - Production (VPS `ssh conoha`, `rs-ec.service`, port 8102): swapped on 2026-11-07 using a WSL build (glibc 2.34); healthz 200, Connect without auth 401, old path 404 verified. Old binary kept as `target/release/*.bak-20261107`. The VPS clone (`/root/RS-EC`) was aligned on 2026-11-15 with `git fetch` + `git reset --hard origin/main` (**never `git pull`**).
 **Open items / cautions**
@@ -189,10 +189,10 @@
 - Any external script still calling the old REST routes will break (no compatibility layer was kept).
 - `F:\_restdeploy` (temporary binaries) can be deleted by hand.
 **Paste-ready message**
-> Resume `aon-co-jp/RS-EC` from a fresh clone (not `git pull`). REST abolition is done; the API is `POST /rs_ec.v1.<Service>/<Method>` (JSON). Read the "REST abolition / Connect migration" sections and this section in README / CLAUDE / PORTING, then: (1) build the latest `main` (with the dependency updates and ARM64 CI) and get `cargo test` green, (2) if fine, release-build in WSL and deploy to the VPS `rs-ec.service` (port 8102), (3) verify healthz 200, Connect 401 without auth, old `/api/...` 404. To add a route, add one line to `rpc_table!`; never add REST. Shared policy: `API-POLICY.md` in `aon-co-jp/runo`. Chat in Japanese only.
+> Resume `aon-co-jp/RS-EC` from a fresh clone (not `git pull`). REST abolition is done; the API is `POST /rs_ec.<Service>/<Method>` (JSON). Read the "REST abolition / Connect migration" sections and this section in README / CLAUDE / PORTING, then: (1) build the latest `main` (with the dependency updates and ARM64 CI) and get `cargo test` green, (2) if fine, release-build in WSL and deploy to the VPS `rs-ec.service` (port 8102), (3) verify healthz 200, Connect 401 without auth, old `/api/...` 404. To add a route, add one line to `rpc_table!`; never add REST. Shared policy: `API-POLICY.md` in `aon-co-jp/runo`. Chat in Japanese only.
 
 ## REST abolition / Connect migration (English summary, 2026-11-06..07)
-- All own APIs (36 operations) are Connect unary calls: `POST /rs_ec.v1.<Service>/<Method>`, `content-type: application/json`, JSON object body (path/query values go into JSON fields), `Authorization: Bearer <session>`.
+- All own APIs (36 operations) are Connect unary calls: `POST /rs_ec.<Service>/<Method>`, `content-type: application/json`, JSON object body (path/query values go into JSON fields), `Authorization: Bearer <session>`.
 - JSON in with RS-JSON `from_str_secure` (64 KiB, depth 16, duplicate keys rejected), JSON out with `rust_json::fast`; errors `{"code","message"}`; success is always HTTP 200.
 - Old `/api/...` REST routes were deleted; kept as exceptions: `GET /`, `GET /healthz`, `GET /qr-confirm.html` (UI/ops).
 - Tests: 48 passing, including old-REST-404, 401 without auth, 400 for bad/duplicate-key JSON, 415 for non-JSON content-type, 405 for GET.
@@ -202,17 +202,32 @@
 **日本語**
 - 完了(2026-11-08): RustSec対応で `Cargo.lock` を更新(h2 0.4.20、rustls 0.23.46、rustls-webpki 0.103.16、webpki-roots 1.0.11、tokio 1.54.1)。`cargo test` 全件成功、`cargo audit` 警告0。VPS(`/root/repository/RS-EC`、`/root/RS-EC` は同じ場所へのリンク)は `git fetch` + `merge --ff-only` → `cargo build --release` → `systemctl restart rs-ec`。旧バイナリは `target/release/*.bak-20261108`。
 - 本番での通し確認(2026-11-08、公開URL `https://runo.tokyo/ec`、ポート 8102): 管理者メールOTPでログイン → 商品(Products) の一覧・作成(下書き)・取得・削除 → ログアウト後は401。確認用データは削除済み。
-- 呼び方の落とし穴: `POST /rs_ec.v1.<サービス>/<メソッド>`、取得・削除は本文に `{"id": N}` を入れる(`.../Get/1` のようなパス形式は404)。認証は `Authorization: Bearer <セッション>`、セッションはメモリ上のみで再起動で失効。OTPは `Auth/RequestOtp`(`{"email":...}`)→ メール「RS-EC ログインコード」→ `Auth/VerifyOtp`(`{"email","code"}`)。OTPやパスワードはClaudeが入力しない(本人がPowerShellで実行し、セッションだけを `F:\` 直下のtxtに保存)。
+- 呼び方の落とし穴: `POST /rs_ec.<サービス>/<メソッド>`、取得・削除は本文に `{"id": N}` を入れる(`.../Get/1` のようなパス形式は404)。認証は `Authorization: Bearer <セッション>`、セッションはメモリ上のみで再起動で失効。OTPは `Auth/RequestOtp`(`{"email":...}`)→ メール「RS-EC ログインコード」→ `Auth/VerifyOtp`(`{"email","code"}`)。OTPやパスワードはClaudeが入力しない(本人がPowerShellで実行し、セッションだけを `F:\` 直下のtxtに保存)。
 - 未了: 別セッションがmajor更新(rand 0.10・sha2 0.11)を入れた旨が`F:\runo\CLAUDE.md`にあるが、本セッションでは未確認。QRログイン・`otp_qr` 方式の本番通し確認。
 - **再開用メッセージ(別アカウントへ貼り付け)**: 「`F:\RS-EC` と `F:\runo` で再開。`git fetch` で最新を確認し(`git pull` はせず fast-forward のみ)、PORTING.md末尾「2026-11-17 再開用メモ」を読む。次の作業: (1) major更新後の `cargo test`/`cargo audit` と本番の通し確認、(2) QRログイン/`otp_qr`の本番確認(OTPは本人が入力)。秘密は表示・コミットしない。」
 
 **English**
 - Done (2026-11-08): RustSec fixes in `Cargo.lock` only (h2 0.4.20, rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.11, tokio 1.54.1). `cargo test` passes and `cargo audit` reports no warnings. On the VPS (`/root/repository/RS-EC`; `/root/RS-EC` links there): `git fetch` + `merge --ff-only` → `cargo build --release` → `systemctl restart rs-ec`. Previous binaries: `target/release/*.bak-20261108`.
 - Verified in production (2026-11-08, public URL `https://runo.tokyo/ec`, port 8102): admin e-mail OTP login → list / create (draft) / get / delete → 401 after logout. Test data was deleted.
-- Call-shape pitfalls: `POST /rs_ec.v1.<Service>/<Method>`; get and delete take `{"id": N}` in the body (a path form such as `.../Get/1` returns 404). Auth is `Authorization: Bearer <session>`; sessions live in memory only and die on restart. OTP: `Auth/RequestOtp` (`{"email":...}`) → e-mail → `Auth/VerifyOtp` (`{"email","code"}`). Claude never types OTPs or passwords; the owner runs PowerShell and stores only the session in a txt at the root of `F:\`.
+- Call-shape pitfalls: `POST /rs_ec.<Service>/<Method>`; get and delete take `{"id": N}` in the body (a path form such as `.../Get/1` returns 404). Auth is `Authorization: Bearer <session>`; sessions live in memory only and die on restart. OTP: `Auth/RequestOtp` (`{"email":...}`) → e-mail → `Auth/VerifyOtp` (`{"email","code"}`). Claude never types OTPs or passwords; the owner runs PowerShell and stores only the session in a txt at the root of `F:\`.
 - Open: `F:\runo\CLAUDE.md` says another session later applied major bumps (rand 0.10, sha2 0.11); not verified in this session. QR login and the `otp_qr` mode are not verified in production.
 - **Resume message (paste into the other account)**: "Resume in `F:\RS-EC` and `F:\runo`. `git fetch` first (no `git pull`; fast-forward only), then read 'Resume memo 2026-11-17' at the end of PORTING.md. Next: (1) `cargo test`/`cargo audit` after the major bumps and a production end-to-end check, (2) QR login / `otp_qr` in production (the owner types the OTP). Never print or commit secrets."
 
 ## 2026-11-20 依存の脆弱性修正 / Dependency security fix
 **日本語**: lettre 0.11.24(RUSTSEC-2026-0560〜0565) を更新し、`cargo test --locked` が全件成功しました(本番反映は別途)。
 **English**: Updated lettre 0.11.24(RUSTSEC-2026-0560〜0565); `cargo test --locked` passes (production deploy is separate).
+
+
+## 2026-11-26 `.v1` 即削除・版なし名へ統一 / `.v1` removed immediately, versionless names only
+
+### 日本語
+- ユーザー指示(2026-11-26)により、自前APIの版つき名(`rs_ec.v1.…`)は**猶予なしで削除**し、版なし名(`rs_ec.<Service>/<Method>`)だけにした。旧名は404を返す(試験 `v1_names_are_gone_versionless_works` で確認)。画面・試験・文書・メール文面の呼び出しも版なし名へ書き換え済み。
+- 第三者の規格名(`grpc.health.v1` 等)は対象外で触っていない。
+- 本番(VPS)への反映・実測は、このコミットの後の記録(下の「本番反映」行)を参照。反映前は旧名が本番で動いている。
+- **再開用メッセージ(別アカウントでそのまま貼り付け)**: 前の続きです。`RS-EC` の README/CLAUDE/PORTING の「2026-11-26 `.v1` 即削除」を読み、(1)`vps-build.sh`(Ubuntu-24.04)でビルドし `check-glibc.sh` を通す、(2)VPSの該当サービスを `*.before-v1del-20261126` にバックアップして入れ替える、(3)新名200/401・旧名404・`/healthz` 200・エラーログ0を実測、(4)結果をこの節に追記してpush。VPSのcloneは `git pull` せず fetch+reset。関連リポジトリ: RS-EC・RS-Blog・RS-Sync(RS-Opsは必要なら)・`runo`。秘密は出さない、VPSでビルドしない、新しいRESTは作らない。
+
+### English
+- Per the user's instruction (2026-11-26), the versioned names of our own API (`rs_ec.v1.…`) were **deleted immediately with no grace period**; only the versionless names (`rs_ec.<Service>/<Method>`) remain. Old names return 404 (test `v1_names_are_gone_versionless_works`). Callers in the UI, tests, docs and mail text were rewritten to the versionless names.
+- Third-party standard names (`grpc.health.v1` etc.) are out of scope and untouched.
+- For the production swap and measurements see the later "production" note below; before that, production still serves the old names.
+- **Resume message (paste as is on another account)**: Continuing from before. Read "2026-11-26 `.v1` removed immediately" in the README/CLAUDE/PORTING of `RS-EC`, then (1) build with `vps-build.sh` (Ubuntu-24.04) and pass `check-glibc.sh`, (2) back up the VPS service as `*.before-v1del-20261126` and swap it, (3) measure new names 200/401, old names 404, `/healthz` 200, error log 0, (4) append the result to this section and push. Never `git pull` VPS clones (fetch+reset). Related repos: RS-EC, RS-Blog, RS-Sync (RS-Ops if needed), `runo`. Never print secrets, never build on the VPS, no new REST.
