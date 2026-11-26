@@ -21,3 +21,7 @@ aon-co-jp 全体の方針(正本: `aon-co-jp/runo` の `API-POLICY.md`)に従い
 - Third-party standard names (`grpc.health.v1` etc.) are out of scope and untouched.
 - For the production swap and measurements see the later "production" note below; before that, production still serves the old names.
 - **Resume message (paste as is on another account)**: Continuing from before. Read "2026-11-26 `.v1` removed immediately" in the README/CLAUDE/PORTING of `RS-EC`, then (1) build with `vps-build.sh` (Ubuntu-24.04) and pass `check-glibc.sh`, (2) back up the VPS service as `*.before-v1del-20261126` and swap it, (3) measure new names 200/401, old names 404, `/healthz` 200, error log 0, (4) append the result to this section and push. Never `git pull` VPS clones (fetch+reset). Related repos: RS-EC, RS-Blog, RS-Sync (RS-Ops if needed), `runo`. Never print secrets, never build on the VPS, no new REST.
+
+### 本番反映(2026-11-26) / Production (2026-11-26)
+- **日本語**: `vps-build.sh`(Ubuntu-24.04、glibc検査OK)でビルドし、`*.before-v1del-20261126` にバックアップして入れ替え・再起動。実測: 新名 401(認証なし)、旧名(`.v1`) 404、`/healthz` 200、エラーログ0。ロールバックはバックアップを元の名前へ戻して再起動。上の「反映前は旧名が本番で動いている」は反映済みのため無効。
+- **English**: Built with `vps-build.sh` (Ubuntu-24.04, glibc check OK), backed up as `*.before-v1del-20261126`, swapped and restarted. Measured: new names 401 without auth, old (`.v1`) names 404, `/healthz` 200, error log 0. Roll back by restoring the backup under the original name and restarting. The "production still serves the old names" remark above is obsolete now.
